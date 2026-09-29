@@ -118,6 +118,7 @@ async function data(a: PublicKey): Promise<Uint8Array> {
   return new Uint8Array(i.data);
 }
 function u64(d: Uint8Array, o: number): bigint { return new DataView(d.buffer, d.byteOffset).getBigUint64(o, true); }
+function u128(d: Uint8Array, o: number): bigint { return u64(d, o) | (u64(d, o + 8) << 64n); }
 const ASSET0 = V17_MARKET_GROUP_OFF + V17_MARKET_GROUP_LEN;
 /** engine-owned AssetStateV16 for asset i (after the wrapper prefix) */
 function engineOff(asset = 0) { return ASSET0 + asset * V17_MARKET_ASSET_SLOT_LEN + V17_ASSET_ORACLE_WRAPPER_LEN; }
@@ -130,6 +131,7 @@ export interface MarketState {
   fees: { protocolAccrued: bigint; protocolWithdrawn: bigint; lpAccrued: bigint; lpWithdrawn: bigint; insReserveAccrued: bigint; insReserveWithdrawn: bigint; creatorClaimable: bigint };
   buckets: { domain: number; status: string; expiry: bigint; lapsed: boolean; freshUnliened: bigint }[];
   sideMode: { long: string; short: string };
+  aLong: bigint; aShort: bigint; reduceOnly: boolean;
   oi: unknown;
   marketId: bigint;
 }
@@ -143,7 +145,7 @@ export async function readMarket(m: SeedMarket): Promise<MarketState> {
   return {
     chainSlot, engineSlot: bb.headerCurrentSlot, lag: chainSlot - bb.headerCurrentSlot,
     markE6: cfg.markEwmaE6, lastGoodOracleSlot: cfg.lastGoodOracleSlot,
-    vaultTokens: await tokenBalance(pk(m.vaultAta)),
+    vaultTokens: m.vaultAta ? await tokenBalance(pk(m.vaultAta)) : 0n,
     fees: {
       protocolAccrued: cfg.protocolFeeAccruedAtoms, protocolWithdrawn: cfg.protocolFeeWithdrawnAtoms,
       lpAccrued: cfg.lpFeeAccruedAtoms, lpWithdrawn: (cfg as any).lpFeeWithdrawnAtoms ?? 0n,
@@ -152,6 +154,9 @@ export async function readMarket(m: SeedMarket): Promise<MarketState> {
     },
     buckets: bb.buckets.map((b: any) => ({ domain: b.domain, status: b.statusName, expiry: b.expirySlot, lapsed: b.lapsed, freshUnliened: b.freshUnlienedBackingNum })),
     sideMode: { long: SIDE_MODE[d[e + 513]] ?? `?${d[e + 513]}`, short: SIDE_MODE[d[e + 514]] ?? `?${d[e + 514]}` },
+    // engine A_side (u128 @ +49/+65; limits-ui constants.ts, engine lib.rs ADL_ONE = 1e15): reduce-only while either != ADL_ONE
+    aLong: u128(d, e + 49), aShort: u128(d, e + 65),
+    reduceOnly: u128(d, e + 49) !== 1_000_000_000_000_000n || u128(d, e + 65) !== 1_000_000_000_000_000n,
     oi: parseMarketGroupV17OI(d),
     marketId: u64(d, e),
   };

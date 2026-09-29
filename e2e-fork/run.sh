@@ -36,7 +36,9 @@ log(){ printf '\n[%s] %s\n' "$(date -u +%H:%M:%SZ)" "$*"; }
 wait_rpc(){ for _ in $(seq 1 60); do curl -sf "$1" -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"getSlot"}' >/dev/null && return 0; sleep 1; done; echo "rpc $1 not up" >&2; return 1; }
 port_free(){ ! lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1; }
 kill_tree(){ local p=$1 c; for c in $(pgrep -P "$p" 2>/dev/null || true); do kill_tree "$c"; done; kill "$p" 2>/dev/null || true; }
-stop_pidfile(){ local f="$RUN/pids/$1"; [[ -f "$f" ]] || return 0; kill_tree "$(cat "$f")"; rm -f "$f"; }
+stop_pidfile(){ local f="$RUN/pids/$1" p; [[ -f "$f" ]] || return 0; p="$(cat "$f")"; kill_tree "$p"
+  for _ in $(seq 1 15); do kill -0 "$p" 2>/dev/null || break; sleep 1; done
+  kill -0 "$p" 2>/dev/null && kill -9 "$p" 2>/dev/null; rm -f "$f"; }
 stop_all(){ bash "$H/lib/keeper-ctl.sh" stop >/dev/null || true; stop_pidfile app; stop_pidfile surfpool; }
 
 # single-instance lock (two concurrent runs share state and race the seed)
@@ -113,7 +115,7 @@ log "journeys: chain-level, non-destructive (on-chain asserts)"
 log "journeys: UI (Playwright + test wallet, on-chain asserts)"
 (cd "$H" && npx playwright test -c playwright.config.ts) || UI_FAIL=1
 log "journeys: chain-level, DESTRUCTIVE last (F-3 freeze / owner exits / permissionless resolve — resolves markets)"
-(cd "$H" && ONLY=F3b,F3b2,F3b3,F3,F3r2,F3c npx tsx journeys/run-chain.ts) || CHAIN_FAIL=1
+(cd "$H" && ONLY=${DESTRUCTIVE:-F7} npx tsx journeys/run-chain.ts) || CHAIN_FAIL=1
 log "done: chain=${CHAIN_FAIL:-0} ui=${UI_FAIL:-0}  results → $RUN/results.json"
 [[ $KEEP == 1 || "$STAGE" == journeys ]] || stop_all
 [[ -z "${CHAIN_FAIL:-}${UI_FAIL:-}" ]]

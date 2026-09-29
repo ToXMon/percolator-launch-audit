@@ -75,7 +75,8 @@ export async function lapsedBucket(sym: string, d: 0 | 1 = 1) {
       record({ journey: J, market: sym, step: `probe with lapsed d${d}: ${name}`, ok: true, actual: r.ok ? "not blocked" : `blocked ${r.err}` });
       if (!r.ok) blocked.push(name);
     }
-    check(J, sym, "negative control: the lapsed bucket blocks at least one flow", blocked.length > 0, "≥1 blocked (19/21)", blocked.join(", ") || "nothing blocked");
+    if (d === 0) check(J, sym, "negative control: the lapsed d0 bucket blocks at least one flow", blocked.length > 0, "≥1 blocked (Earn deposit 21)", blocked.join(", ") || "nothing blocked");
+    else check(J, sym, "observation: a lapsed d1 bucket blocks no user flow (opens/earn/crank/withdraw)", blocked.length === 0, "nothing blocked", blocked.join(", ") || "nothing blocked");
     for (const name of blocked) {
       const build = flows.find((f) => f[0] === name)![1];
       const r = await P.send([P.expireBucketIx(m, d), ...(await build())], [t], { simulateOnly: true });
@@ -442,4 +443,67 @@ export async function unsignedLpCloseUnblocksWinner(sym = "TRUMP") {
   const rc = await P.send([closeResolvedIx(ck.publicKey, m, cp)], [ck]);
   const got = (await P.usdcBalance(ck.publicKey)) - w0;
   check(J, sym, "stuck winner C is paid after the LP close", got > 0n, `> 0 (C had capital ${before.capital} pnl ${before.pnl})`, `${rc.ok ? "ok" : rc.err} +${got}`, rc.sig ? [rc.sig] : []);
+}
+
+/**
+ * F7 dead oracle (keeper stopped for REAL slots): positions exist (loser, winner, flat, LP),
+ * pushes stop, `permissionless_resolve_stale_slots` elapses in real slots, anyone resolves
+ * (tag 39), and every account withdraws via CloseResolved (tag 30). The ONLY surgery: seeded
+ * markets have stale_slots = 0 (B1), so it is set to the program minimum 9,000 — the value the
+ * seed must set pre-InitPool. last_good_oracle_slot is NOT touched: the wait is real (~60 min).
+ */
+export async function deadOracleResolve(sym = "JUP", stale = 9_000n) {
+  const J = "F7-dead-oracle-permissionless-resolve";
+  const m = P.markets()[sym];
+  const users: { name: string; kp: import("@solana/web3.js").Keypair; port: PublicKey }[] = [];
+  for (const [name, dep] of [["L-long", 500_000_000n], ["S-short", 500_000_000n], ["F-flat", 300_000_000n]] as const) {
+    const kp = await P.newWallet({ usdc: dep + 10_000_000n });
+    const port = await P.createPortfolio(kp, m);
+    await P.mustSend(`${name} deposit`, [await P.depositIx(kp.publicKey, m, port, dep)], [kp]);
+    users.push({ name, kp, port });
+  }
+  await P.mustSend("L long vs LP", [await P.tradeIx(users[0].kp.publicKey, m, users[0].port, await P.qForUsd(m, 1000))], [users[0].kp]);
+  await P.mustSend("S short vs LP", [await P.tradeIx(users[1].kp.publicKey, m, users[1].port, -(await P.qForUsd(m, 500)))], [users[1].kp]);
+  const raw = Buffer.from((await P.conn.getAccountInfo(P.pk(m.slab)))!.data);
+  const staleCfg = (parseWrapperConfigV17(new Uint8Array(raw), V17_HEADER_LEN) as any).permissionlessResolveStaleSlots as bigint;
+  check(J, sym, "seeded market has a permissionless exit (permissionless_resolve_stale_slots ≠ 0)", staleCfg !== 0n, "≥ 9000", `${staleCfg} (seed ca17a8c2)`);
+  if (staleCfg === 0n) {
+    await patchSlab(P.pk(m.slab), [[cfgFieldOffset(raw, "permissionlessResolveStaleSlots"), u64(stale)]]);
+    record({ journey: J, market: sym, step: "RECORDED surgery: permissionless_resolve_stale_slots 0 → 9000 (what the seed must set before InitPool)", ok: true, actual: "only surgery in F7" });
+  }
+  keeper("stop");
+  try {
+    const lastGood = (await P.readMarket(m)).lastGoodOracleSlot;
+    const matureAt = lastGood + stale;
+    const caller = await P.newWallet({ sol: 1 });
+    const resolveIx = async () => { const rd = Buffer.alloc(9); rd[0] = 39; rd.writeBigUInt64LE(BigInt(await P.conn.getSlot("confirmed")), 1);
+      return new TransactionInstruction({ programId: P.WRAPPER, keys: [{ pubkey: P.pk(m.slab), isSigner: false, isWritable: true }], data: rd }); };
+    // negative control halfway
+    while (BigInt(await P.conn.getSlot("confirmed")) < lastGood + stale / 2n) await P.sleep(10_000);
+    const early = await P.send([await resolveIx()], [caller], { simulateOnly: true });
+    check(J, sym, "negative control: resolve refused before the stale window elapses", !early.ok, "OracleStale refusal", `${early.err} @ slot ${await P.conn.getSlot()} (matures ${matureAt})`);
+    while (BigInt(await P.conn.getSlot("confirmed")) < matureAt + 5n) await P.sleep(10_000);
+    const res = await P.send([await resolveIx()], [caller]);
+    const { parseBackingBucketsV17 } = await import("@percolatorct/sdk");
+    const mode = parseBackingBucketsV17(new Uint8Array((await P.conn.getAccountInfo(P.pk(m.slab)))!.data)).mode;
+    check(J, sym, `pushes stopped ${stale} real slots → anyone resolves (tag 39)`, res.ok && mode !== 0, "Resolved", res.ok ? `mode ${mode}` : `${res.err}`, res.sig ? [res.sig] : []);
+    if (!res.ok) return;
+    const all = [...users, { name: "LP (owner)", kp: P.admin, port: P.pk(m.lpPortfolio) }];
+    const paid: Record<string, bigint> = {};
+    for (let round = 0; round < 4; round++) {
+      for (const u of all) {
+        const p = await P.readPortfolio(u.port).catch(() => null);
+        if (!p || (p.capital === 0n && p.pnl === 0n && !p.legs.length)) continue;
+        const w0 = await P.usdcBalance(u.kp.publicKey);
+        await P.send([closeResolvedIx(u.kp.publicKey, m, u.port)], [u.kp]);
+        paid[u.name] = (paid[u.name] ?? 0n) + (await P.usdcBalance(u.kp.publicKey)) - w0;
+      }
+    }
+    for (const u of all) {
+      const p = await P.readPortfolio(u.port).catch(() => null);
+      check(J, sym, `${u.name}: withdrew everything after resolve`, (paid[u.name] ?? 0n) > 0n && (!p || (p.capital === 0n && p.pnl <= 0n)),
+        "paid > 0, portfolio emptied", `paid ${paid[u.name] ?? 0n}; left capital=${p?.capital} pnl=${p?.pnl}`);
+    }
+    record({ journey: J, market: sym, step: "vault after all closes", ok: true, actual: `${(await P.readMarket(m)).vaultTokens}` });
+  } finally { keeper("start"); }
 }

@@ -4,7 +4,7 @@
  */
 import { traderJourney } from "./chain/trader.ts";
 import { earnJourney, stakeJourney, creatorFeeJourney, nftJourney } from "./chain/products.ts";
-import { lapsedBucket, resetPendingSide, keeperOutage, bankruptLiquidation, freezeAndPermissionlessResolve } from "./chain/forced.ts";
+import { lapsedBucket, resetPendingSide, keeperOutage, bankruptLiquidation, freezeAndPermissionlessResolve, freezeThenOwnerExits, unsignedLpCloseUnblocksWinner } from "./chain/forced.ts";
 import { journey } from "../lib/results.ts";
 
 const ONLY = new Set((process.env.ONLY ?? "").split(",").filter(Boolean));
@@ -24,7 +24,12 @@ const plan: [string, string, () => Promise<unknown>][] = [
   ["F2", "BURNIE", () => resetPendingSide("BURNIE")],
   ["F6", "SOL,JUP", () => keeperOutage(["SOL", "JUP"])],
   ["F5", "SOL", () => bankruptLiquidation("SOL")],
-  ["F3", "BURNIE", () => freezeAndPermissionlessResolve("BURNIE")], // LAST: resolves the market
+  ["F3b", "PENGU", () => freezeThenOwnerExits("PENGU")],
+  ["F3b2", "JUP", () => freezeThenOwnerExits("JUP", 34, "shorts-first")],
+  ["F3b3", "Percolator", () => freezeThenOwnerExits("Percolator", 34, "longs-first", true)],
+  ["F3", "TRUMP", () => freezeAndPermissionlessResolve("TRUMP")],
+  ["F3r2", "SOL", () => freezeAndPermissionlessResolve("SOL")],
+  ["F3c", "TRUMP", () => unsignedLpCloseUnblocksWinner("TRUMP")], // LAST: resolves the market
 ];
 let failed = 0;
 for (const [id, label, fn] of plan) {

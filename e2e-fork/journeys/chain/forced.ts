@@ -246,6 +246,7 @@ export async function freezeAndPermissionlessResolve(sym = "Percolator", dropPct
       await P.mustSend(`${name} deposit`, [await P.depositIx(kp.publicKey, m, port, dep)], [kp]);
       users.push({ name, kp, port, dep });
     }
+    (await import("node:fs")).writeFileSync(`${P.RUN}/f3-users-${sym}.json`, JSON.stringify(users.map((u) => ({ name: u.name, port: u.port.toBase58(), secret: Array.from(u.kp.secretKey) }))));
     const [A, B, C] = users;
     await P.mustSend("A 9x long vs LP", [await P.tradeIx(A.kp.publicKey, m, A.port, await P.qForUsd(m, 1800))], [A.kp]);
     const st0 = await P.readMarket(m);
@@ -275,6 +276,9 @@ export async function freezeAndPermissionlessResolve(sym = "Percolator", dropPct
     }
     check(J, sym, `engine effective price walked ~-${dropPct}% (oracle-authority pushes + permissionless cranks)`, effOff >= 0 && eff <= (target * 1005n) / 1000n,
       `effective ≤ ${target}`, `effective ${st0.markE6}→${eff} @engine+${effOff - ENGINE0} in ${Math.round((Date.now() - t0) / 60000)} min (cands ${cands.map((o) => o - ENGINE0).join(",")})`);
+    await P.send([P.crankIx(P.admin.publicKey, m, A.port)], [P.admin]); // touch A so its PnL settles at the walked price
+    const aSettled = await P.readPortfolio(A.port);
+    record({ journey: J, market: sym, step: "A (9x long) after the move, settled by a crank on its portfolio", ok: true, actual: `capital=${aSettled.capital} pnl=${aSettled.pnl} legs=${aSettled.legs.length}` });
     for (const side of [0, 1] as const) await P.send([finalizeResetSideIx(P.pk(m.slab), side)], [P.admin]);
     for (let i = 0; i < 3; i++) await P.send([P.crankIx(P.admin.publicKey, m)], [P.admin]);
     const stF = await P.readMarket(m);
@@ -321,6 +325,121 @@ export async function freezeAndPermissionlessResolve(sym = "Percolator", dropPct
       const after = await P.readPortfolio(u.port).catch(() => null);
       check(J, sym, `${u.name}: CloseResolved withdraws after resolve`, r.ok && (after === null || after.capital === 0n), "ok, capital 0", `${r.ok ? "ok" : r.err} +${got} (deposited ${u.dep})`, r.sig ? [r.sig] : []);
     }
-    record({ journey: J, market: sym, step: "total paid out to users", ok: true, actual: `${paid}` });
+    {
+      const w0 = await P.usdcBalance(P.admin.publicKey);
+      const rl = await P.send([closeResolvedIx(P.admin.publicKey, m, P.pk(m.lpPortfolio))], [P.admin]);
+      record({ journey: J, market: sym, step: "LP portfolio (sandbox owner) CloseResolved", ok: rl.ok, actual: `${rl.ok ? "ok" : rl.err} +${(await P.usdcBalance(P.admin.publicKey)) - w0}` });
+    }
+    for (const u of users) {
+      const left = await P.readPortfolio(u.port).catch(() => null);
+      if (!left || (left.capital === 0n && left.pnl <= 0n)) continue;
+      const w0 = await P.usdcBalance(u.kp.publicKey);
+      const claim = buildIx({ programId: P.WRAPPER, keys: buildAccountMetas(ACCOUNTS_CLOSE_RESOLVED, {
+        owner: u.kp.publicKey, market: P.pk(m.slab), portfolio: u.port, destToken: P.getAssociatedTokenAddressSync(P.USDC, u.kp.publicKey, false, P.TOKEN_PROGRAM_ID),
+        vaultToken: P.pk(m.vaultAta), vaultAuthority: P.pk(m.vaultAuth), tokenProgram: P.TOKEN_PROGRAM_ID } as any), data: Buffer.from([46]) });
+      const r46 = await P.send([claim], [u.kp]);
+      const r30 = await P.send([closeResolvedIx(u.kp.publicKey, m, u.port)], [u.kp]);
+      const got = (await P.usdcBalance(u.kp.publicKey)) - w0; paid += got;
+      const after = await P.readPortfolio(u.port).catch(() => null);
+      check(J, sym, `${u.name}: residual claim (tag 46 ClaimResolvedPayoutTopup + CloseResolved again)`, got > 0n && (!after || (after.capital === 0n && after.pnl <= 0n)),
+        "remaining equity paid", `before: capital=${left.capital} pnl=${left.pnl}; tag46=${r46.ok ? "ok" : r46.err} close=${r30.ok ? "ok" : r30.err} +${got}; after capital=${after?.capital} pnl=${after?.pnl}`, [r46.sig ?? "", r30.sig ?? ""]);
+    }
+    const vaultLeft = (await P.readMarket(m)).vaultTokens;
+    record({ journey: J, market: sym, step: "total paid out to users / vault left", ok: true, actual: `paid ${paid}; vault still holds ${vaultLeft}` });
   } finally { keeper("start"); }
+}
+
+
+/** F3b: the owner-signed exit from the F-3 state (triage: ADL reduce-only) — tag 44 RebalanceReduce by
+ *  every holder, then cranks + FinalizeResetSide → a fresh pair can open/close and every flat account withdraws. */
+export async function freezeThenOwnerExits(sym = "PENGU", dropPct = 34, order: "longs-first" | "shorts-first" = "longs-first", resetBetween = false) {
+  const J = `F3b-freeze-owner-exits-${order}${resetBetween ? "-reset-between" : ""}`;
+  const m = P.markets()[sym];
+  keeper("stop");
+  try {
+    const users: { name: string; kp: import("@solana/web3.js").Keypair; port: PublicKey }[] = [];
+    for (const [name, dep] of [["A-long-vs-LP", 200_000_000n], ["B-long", 1_000_000_000n], ["C-short", 1_000_000_000n]] as const) {
+      const kp = await P.newWallet({ usdc: dep + 10_000_000n });
+      const port = await P.createPortfolio(kp, m);
+      await P.mustSend(`${name} deposit`, [await P.depositIx(kp.publicKey, m, port, dep)], [kp]);
+      users.push({ name, kp, port });
+    }
+    const [A, B, C] = users;
+    await P.mustSend("A 9x long", [await P.tradeIx(A.kp.publicKey, m, A.port, await P.qForUsd(m, 1800))], [A.kp]);
+    const st0 = await P.readMarket(m);
+    const [ib, ic] = [await P.readPortfolio(B.port), await P.readPortfolio(C.port)];
+    await P.mustSend("B/C NoCpi", [buildIx({ programId: P.WRAPPER, keys: buildAccountMetas(ACCOUNTS_TRADE_NOCPI, { signerA: B.kp.publicKey, signerB: C.kp.publicKey, market: P.pk(m.slab), accountA: B.port, accountB: C.port }),
+      data: encodeTradeNoCpi({ accountAPortfolioId: ib.portfolioId, accountAPositionEpoch: ib.positionEpoch, accountBPortfolioId: ic.portfolioId, accountBPositionEpoch: ic.positionEpoch, assetIndex: 0, marketId: st0.marketId, sizeQ: await P.qForUsd(m, 500), execPrice: st0.markE6, feeBps: 30n, backingFeeCapBps: 0 }) })], [B.kp, C.kp]);
+    const target = (st0.markE6 * BigInt(100 - dropPct)) / 100n;
+    for (let i = 0; i < 20; i++) { await pushMark(m, target); await P.send([P.crankIx(P.admin.publicKey, m)], [P.admin]); await P.sleep(4000); }
+    for (const u of users) await P.send([P.crankIx(P.admin.publicKey, m, u.port)], [P.admin]);
+    for (const side of [0, 1] as const) await P.send([finalizeResetSideIx(P.pk(m.slab), side)], [P.admin]);
+    const fresh = await P.newWallet({ usdc: 200_000_000n });
+    const fp = await P.createPortfolio(fresh, m);
+    await P.send([await P.depositIx(fresh.publicKey, m, fp, 100_000_000n)], [fresh]);
+    const before = await P.send([await P.tradeIx(fresh.publicKey, m, fp, await P.qForUsd(m, 20))], [fresh], { simulateOnly: true });
+    record({ journey: J, market: sym, step: "state after the move: fresh open", ok: true, actual: before.ok ? "open OK (no freeze on this run)" : `blocked ${before.err}` });
+    const holders = [...users, { name: "LP (matcher, sandbox owner)", kp: P.admin, port: P.pk(m.lpPortfolio) }];
+    const sideOf = async (u: { port: PublicKey }) => { const l = (await P.readPortfolio(u.port)).legs[0]; return l ? (l.basisPosQ < 0n ? 1 : 0) : 2; };
+    const withSide = await Promise.all(holders.map(async (u) => ({ u, s: await sideOf(u) })));
+    withSide.sort((a, b) => (order === "shorts-first" ? b.s % 2 - a.s % 2 : a.s % 2 - b.s % 2));
+    let prevSide = -1;
+    for (const { u, s: side } of withSide) {
+      if (resetBetween && prevSide >= 0 && side % 2 !== prevSide % 2) {
+        for (let i = 0; i < 3; i++) await P.send([P.crankIx(P.admin.publicKey, m)], [P.admin]);
+        for (const sd of [0, 1] as const) await P.send([finalizeResetSideIx(P.pk(m.slab), sd)], [P.admin]);
+        record({ journey: J, market: sym, step: "cranks + FinalizeResetSide between sides", ok: true, actual: `sides=${(await P.readMarket(m)).sideMode.long}/${(await P.readMarket(m)).sideMode.short}` });
+      }
+      prevSide = side;
+      const p = await P.readPortfolio(u.port);
+      if (!p.legs.length) { record({ journey: J, market: sym, step: `${u.name}: no leg left (liquidated/ADL'd)`, ok: true, actual: `capital=${p.capital}` }); continue; }
+      const q = p.legs[0].basisPosQ < 0n ? -p.legs[0].basisPosQ : p.legs[0].basisPosQ;
+      const data = Buffer.alloc(1 + 8 + 8 + 2 + 16); data[0] = 44; data.writeBigUInt64LE(p.portfolioId, 1); data.writeBigUInt64LE(p.positionEpoch, 9); data.writeUInt16LE(0, 17);
+      data.writeBigUInt64LE(q & ((1n << 64n) - 1n), 19); data.writeBigUInt64LE(q >> 64n, 27);
+      const ix = new TransactionInstruction({ programId: P.WRAPPER, keys: [
+        { pubkey: u.kp.publicKey, isSigner: true, isWritable: true }, { pubkey: P.pk(m.slab), isSigner: false, isWritable: true }, { pubkey: u.port, isSigner: false, isWritable: true } ], data });
+      const r = await P.send([ix], [u.kp]);
+      const after = await P.readPortfolio(u.port);
+      check(J, sym, `${u.name}: owner-signed exit (tag 44 RebalanceReduce)`, r.ok && after.legs.length === 0, "ok, 0 legs", `${r.ok ? "ok" : `${r.err} ${r.logs.slice(-3).join(" | ")}`} legs=${after.legs.length}`, r.sig ? [r.sig] : []);
+    }
+    for (let i = 0; i < 3; i++) await P.send([P.crankIx(P.admin.publicKey, m)], [P.admin]);
+    for (const side of [0, 1] as const) await P.send([finalizeResetSideIx(P.pk(m.slab), side)], [P.admin]);
+    const reopen = await P.send([await P.tradeIx(fresh.publicKey, m, fp, await P.qForUsd(m, 20))], [fresh]);
+    check(J, sym, "after exits: market reopens (fresh open lands)", reopen.ok, "ok", reopen.ok ? "ok" : `${reopen.err}`, reopen.sig ? [reopen.sig] : []);
+    const fl = await P.readPortfolio(fp); if (fl.legs[0]) await P.send([await P.tradeIx(fresh.publicKey, m, fp, -fl.legs[0].basisPosQ)], [fresh]);
+    for (const u of [...users, { name: "fresh", kp: fresh, port: fp }]) {
+      const p = await P.readPortfolio(u.port);
+      const w0 = await P.usdcBalance(u.kp.publicKey);
+      const r = p.capital > 0n ? await P.send([await P.withdrawIx(u.kp.publicKey, m, u.port, p.capital)], [u.kp]) : { ok: true, err: undefined, sig: undefined, logs: [] };
+      const got = (await P.usdcBalance(u.kp.publicKey)) - w0;
+      check(J, sym, `${u.name}: withdraws all capital after exits`, r.ok && got === p.capital, `+${p.capital}`, `${r.ok ? "ok" : r.err} +${got}`, r.sig ? [r.sig] : []);
+    }
+  } finally { keeper("start"); }
+}
+
+
+/** F3c: on an already-resolved market, can ANYONE close the matcher-LP portfolio (CloseResolved,
+ *  unsigned variant) so that a stuck winner gets paid? Uses the F3 users persisted for `sym`. */
+export async function unsignedLpCloseUnblocksWinner(sym = "TRUMP") {
+  const J = "F3c-unsigned-lp-close";
+  const m = P.markets()[sym];
+  const fs = await import("node:fs");
+  const us = JSON.parse(fs.readFileSync(`${P.RUN}/f3-users-${sym}.json`, "utf8")) as { name: string; port: string; secret: number[] }[];
+  const C = us.find((u) => u.name === "C-short")!;
+  const ck = (await import("@solana/web3.js")).Keypair.fromSecretKey(Uint8Array.from(C.secret));
+  const cp = P.pk(C.port);
+  const before = await P.readPortfolio(cp);
+  const { ACCOUNTS_CLOSE_RESOLVED_UNSIGNED, deriveNftRegistry } = await import("@percolatorct/sdk");
+  const caller = await P.newWallet({ sol: 1 });
+  const lpOwner = P.admin.publicKey;
+  const data = Buffer.alloc(17); data[0] = 30;
+  const ix = buildIx({ programId: P.WRAPPER, keys: buildAccountMetas(ACCOUNTS_CLOSE_RESOLVED_UNSIGNED, {
+    owner: lpOwner, market: P.pk(m.slab), portfolio: P.pk(m.lpPortfolio), destToken: P.getAssociatedTokenAddressSync(P.USDC, lpOwner, false, P.TOKEN_PROGRAM_ID),
+    vaultToken: P.pk(m.vaultAta), vaultAuthority: P.pk(m.vaultAuth), tokenProgram: P.TOKEN_PROGRAM_ID, nftRegistry: deriveNftRegistry(P.WRAPPER, P.pk(m.slab))[0] } as any), data });
+  const r = await P.send([ix], [caller]);
+  record({ journey: J, market: sym, step: "a random caller closes the resolved LP portfolio (CloseResolved, owner NOT signing)", ok: true, actual: r.ok ? "ok — permissionless" : `refused ${r.err} ${r.logs.slice(-2).join(" | ")}` });
+  const w0 = await P.usdcBalance(ck.publicKey);
+  const rc = await P.send([closeResolvedIx(ck.publicKey, m, cp)], [ck]);
+  const got = (await P.usdcBalance(ck.publicKey)) - w0;
+  check(J, sym, "stuck winner C is paid after the LP close", got > 0n, `> 0 (C had capital ${before.capital} pnl ${before.pnl})`, `${rc.ok ? "ok" : rc.err} +${got}`, rc.sig ? [rc.sig] : []);
 }

@@ -68,6 +68,8 @@ if [[ "$STAGE" == all || "$STAGE" == setup ]]; then
 
   log "mainnet DEX pool snapshot → local validator (price source for seed + keeper)"
   (cd "$H" && npx tsx lib/mainnet-snapshot.ts "$RPC" "$RUN/cache/mainnet-dex.json")
+  # wizard journey token (WIF) pools — read-only snapshot, cached
+  (cd "$H" && EXTRA_POOLS=ADEjbFryutjfrJTpZfFPRMFhF7XBisPY63Awe79EVhe9,4mMDQ5kG9fFrBSQeedErsUoTBhY5KKnsKWGvenXRTwSy npx tsx lib/mainnet-snapshot.ts "$RPC" "$RUN/cache/mainnet-dex-wif.json")
 
   log "P0a seed (copy of $SEED_KIT, sha recorded) under the sandbox HOME"
   mkdir -p "$RUN/seed-kit/lib"
@@ -106,10 +108,12 @@ ENV
 fi
 
 [[ "$STAGE" == setup ]] && { log "setup done (services left running)"; exit 0; }
-log "journeys: chain-level (on-chain asserts)"
-(cd "$H" && npx tsx journeys/run-chain.ts) || CHAIN_FAIL=1
+log "journeys: chain-level, non-destructive (on-chain asserts)"
+(cd "$H" && ONLY=C1,C2,C3,C4,C5,F1,F2,F6,F5 npx tsx journeys/run-chain.ts) || CHAIN_FAIL=1
 log "journeys: UI (Playwright + test wallet, on-chain asserts)"
 (cd "$H" && npx playwright test -c playwright.config.ts) || UI_FAIL=1
+log "journeys: chain-level, DESTRUCTIVE last (F-3 freeze / owner exits / permissionless resolve — resolves markets)"
+(cd "$H" && ONLY=F3b,F3b2,F3b3,F3,F3r2,F3c npx tsx journeys/run-chain.ts) || CHAIN_FAIL=1
 log "done: chain=${CHAIN_FAIL:-0} ui=${UI_FAIL:-0}  results → $RUN/results.json"
 [[ $KEEP == 1 || "$STAGE" == journeys ]] || stop_all
 [[ -z "${CHAIN_FAIL:-}${UI_FAIL:-}" ]]

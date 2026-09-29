@@ -21,17 +21,17 @@ import {
   parseDexPool,
 } from "@percolatorct/sdk";
 
-const ENGINE0 = V17_MARKET_GROUP_OFF + V17_MARKET_GROUP_LEN + V17_ASSET_SLOT_WRAPPER_LEN;
-const BB_EXPIRY = 88; // BackingBucketV16.expiry_slot (u64), matches the SDK parser's BB_EXPIRY_SLOT
-const SIDE_MODE_LONG = 513, SIDE_MODE_SHORT = 514; // engine-rel (p0b-frontend §3, dump_layout @6377376a)
+export const ENGINE0 = V17_MARKET_GROUP_OFF + V17_MARKET_GROUP_LEN + V17_ASSET_SLOT_WRAPPER_LEN;
+export const BB_EXPIRY = 88; // BackingBucketV16.expiry_slot (u64), matches the SDK parser's BB_EXPIRY_SLOT
+export const SIDE_MODE_LONG = 513, SIDE_MODE_SHORT = 514; // engine-rel (p0b-frontend §3, dump_layout @6377376a)
 
-async function patchSlab(slab: PublicKey, edits: [number, Buffer][]): Promise<void> {
+export async function patchSlab(slab: PublicKey, edits: [number, Buffer][]): Promise<void> {
   const ai = (await P.conn.getAccountInfo(slab, "confirmed"))!;
   const d = Buffer.from(ai.data);
   for (const [off, b] of edits) b.copy(d, off);
   await rpc(P.RPC, "surfnet_setAccount", [slab.toBase58(), { data: d.toString("hex"), owner: ai.owner.toBase58(), lamports: ai.lamports }]);
 }
-function u64(v: bigint) { const b = Buffer.alloc(8); b.writeBigUInt64LE(v); return b; }
+export function u64(v: bigint) { const b = Buffer.alloc(8); b.writeBigUInt64LE(v); return b; }
 export function keeper(cmd: "start" | "stop" | "status"): string {
   return execFileSync("bash", [path.join(P.HARNESS, "lib/keeper-ctl.sh"), cmd], { encoding: "utf8" }).trim();
 }

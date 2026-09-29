@@ -16,5 +16,6 @@ NEXT_PUBLIC_STAKE_PROGRAM_ID=GCHhcgwPyrai8SWHEVWw3odedguFXEtJobNnWSfWBCU3
 NEXT_PUBLIC_TEST_USDC_MINT=DJ54k4wH92NTtNP8RuHAwG8si1bevXEknzctDdqYN8eC
 NEXT_PUBLIC_API_URL=http://localhost:3299
 DEVNET_MINT_AUTHORITY_KEYPAIR=$(cat "$RUN/home/.config/solana/percolator-devnet-mint-authority.json")
+PLAYGROUND_KEEPER_KEYPAIR=$(cat "$RUN/home/.config/solana/percolator-v17-devnet.json")
 ENV
 echo "app env → $APP/.env.local"

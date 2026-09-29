@@ -1,19 +1,20 @@
 #!/usr/bin/env bash
-# One-command local-fork E2E: surfpool (devnet fork + mainnet fork for DEX prices) →
-# candidate .so install (cheatcodes, byte-verified) → throwaway sandbox keys → P0a seed →
-# keeper (feat/keeper-fee-loop) → app (feat/p0b-self-heal) → chain + Playwright journeys.
-# LOCAL ONLY: every RPC the harness writes to is 127.0.0.1/localhost; devnet/mainnet are
-# read-only datasources for surfpool's lazy account fetch. No real key is ever read.
+# One-command local E2E: ONE surfpool (--offline, hermetic) → candidate .so install
+# (cheatcodes, byte-verified) → read-only mainnet DEX snapshot loaded into it → throwaway
+# sandbox keys → P0a seed → keeper (feat/keeper-fee-loop) → app (feat/p0b-self-heal)
+# → chain + Playwright journeys.
+# LOCAL ONLY: every RPC written to is 127.0.0.1/localhost. Mainnet/devnet are read
+# once, read-only (DEX pool snapshot; live matcher dump), both cached + sha-checked.
+# Process hygiene: only PIDs recorded in $RUN/pids/* are ever killed (never pkill -f).
 #
-#   ./run.sh                    # full run (fresh fork)
-#   ./run.sh --keep             # leave services running afterwards
-#   STAGE=journeys ./run.sh     # reuse running services, just run journeys
+#   ./run.sh                    # full run (fresh validator), stops services at the end
+#   ./run.sh --keep             # leave services running
+#   STAGE=setup ./run.sh        # bring the stack up and leave it running
+#   STAGE=journeys ./run.sh     # journeys against the running stack
+#   STAGE=stop ./run.sh         # stop everything this harness started
 #
-# Every component is an env var (defaults = the P0 candidate set):
-#   WRAPPER_SO STAKE_SO NFT_SO [MATCHER_SO]    program candidates
-#   SEED_KIT      dir holding newmarkets-v18.3.ts + lib/common.ts (P0a kit)
-#   KEEPER_DIR    checkout of percolator-oracle-keeper @ feat/keeper-fee-loop (deps installed)
-#   APP_DIR       checkout of percolator-launch @ feat/p0b-self-heal (deps installed)
+# Components (env): WRAPPER_SO STAKE_SO NFT_SO [MATCHER_SO] SEED_KIT KEEPER_DIR APP_DIR
+# Ports (env): RPC_PORT (ws = +1), APP_PORT, KEEPER_HEALTH_PORT — defaults in the 385xx range.
 set -euo pipefail
 H="$(cd "$(dirname "$0")" && pwd)"
 RUN="${RUN_DIR:-$H/.run}"
@@ -24,12 +25,20 @@ RUN="${RUN_DIR:-$H/.run}"
 : "${SEED_KIT:=$HOME/wt/ops-p0a-kit/relaunch}"
 : "${KEEPER_DIR:=$HOME/wt/e2e-keeper-0930}"
 : "${APP_DIR:=$HOME/wt/e2e-app-0930}"
-: "${RPC_PORT:=28899}"; : "${MRPC_PORT:=38899}"; : "${APP_PORT:=3290}"; : "${KEEPER_HEALTH_PORT:=3291}"
-RPC="http://127.0.0.1:$RPC_PORT"; MRPC="http://127.0.0.1:$MRPC_PORT"
+: "${RPC_PORT:=38599}"; : "${APP_PORT:=38590}"; : "${KEEPER_HEALTH_PORT:=38591}"
+RPC="http://127.0.0.1:$RPC_PORT"
 STAGE="${STAGE:-all}"
 KEEP=0; [[ "${1:-}" == "--keep" ]] && KEEP=1
-export WRAPPER_SO STAKE_SO NFT_SO MATCHER_SO RPC MRPC
-mkdir -p "$RUN/shots"
+export WRAPPER_SO STAKE_SO NFT_SO MATCHER_SO RPC RUN_DIR="$RUN" KEEPER_DIR APP_PORT
+export MRPC="$RPC" E2E_APP_URL="http://localhost:$APP_PORT"
+mkdir -p "$RUN/shots" "$RUN/pids" "$RUN/cache"
+log(){ printf '\n[%s] %s\n' "$(date -u +%H:%M:%SZ)" "$*"; }
+wait_rpc(){ for _ in $(seq 1 60); do curl -sf "$1" -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"getSlot"}' >/dev/null && return 0; sleep 1; done; echo "rpc $1 not up" >&2; return 1; }
+port_free(){ ! lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1; }
+kill_tree(){ local p=$1 c; for c in $(pgrep -P "$p" 2>/dev/null || true); do kill_tree "$c"; done; kill "$p" 2>/dev/null || true; }
+stop_pidfile(){ local f="$RUN/pids/$1"; [[ -f "$f" ]] || return 0; kill_tree "$(cat "$f")"; rm -f "$f"; }
+stop_all(){ bash "$H/lib/keeper-ctl.sh" stop >/dev/null || true; stop_pidfile app; stop_pidfile surfpool; }
+
 # single-instance lock (two concurrent runs share state and race the seed)
 LOCK="$RUN/.lock"
 if ! mkdir "$LOCK" 2>/dev/null; then
@@ -37,30 +46,28 @@ if ! mkdir "$LOCK" 2>/dev/null; then
   rm -rf "$LOCK"; mkdir "$LOCK"
 fi
 echo $$ > "$LOCK/pid"; trap 'rm -rf "$LOCK"' EXIT
-log(){ printf '\n[%s] %s\n' "$(date -u +%H:%M:%SZ)" "$*"; }
-wait_rpc(){ for _ in $(seq 1 60); do curl -sf "$1" -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"getSlot"}' >/dev/null && return 0; sleep 1; done; echo "rpc $1 not up" >&2; return 1; }
 
-stop_all(){
-  pkill -f "surfpool start.*--port $RPC_PORT" || true
-  pkill -f "surfpool start.*--port $MRPC_PORT" || true
-  pkill -f "next dev -p $APP_PORT" || true
-  [[ -f "$RUN/keeper.pid" ]] && kill "$(cat "$RUN/keeper.pid")" 2>/dev/null || true
-}
+if [[ "$STAGE" == stop ]]; then stop_all; log "stopped"; exit 0; fi
 
 if [[ "$STAGE" == all || "$STAGE" == setup ]]; then
-  log "stop previous harness services"; stop_all; sleep 2
-  rm -rf "$RUN/surfpool-logs" "$RUN/surfpool-mainnet-logs" "$RUN/seed-state.json"
-  log "surfpool: OFFLINE local validator :$RPC_PORT (hermetic), mainnet fork :$MRPC_PORT (read-only DEX price datasource)"
-  (cd "$RUN" && nohup surfpool start --offline --no-tui --no-deploy --no-studio --port "$RPC_PORT" --ws-port $((RPC_PORT+1)) --log-path ./surfpool-logs > surfpool-devnet.log 2>&1 &)
-  (cd "$RUN" && nohup surfpool start --network mainnet --no-tui --no-deploy --no-studio --port "$MRPC_PORT" --ws-port $((MRPC_PORT+1)) --log-path ./surfpool-mainnet-logs > surfpool-mainnet.log 2>&1 &)
-  wait_rpc "$RPC"; wait_rpc "$MRPC"
+  df -h "$HOME" | tail -1
+  log "stop previous harness services (recorded PIDs only)"; stop_all; sleep 2
+  for p in "$RPC_PORT" $((RPC_PORT+1)) "$APP_PORT" "$KEEPER_HEALTH_PORT"; do port_free "$p" || { echo "port $p is in use by someone else — pick another range" >&2; exit 4; }; done
+  rm -rf "$RUN/surfpool-logs" "$RUN/seed-state.json" "$RUN/results.json"
 
-  log "sandbox: throwaway keys + Sim-USDC mint authority rewrite (local cheatcode)"
+  log "surfpool --offline :$RPC_PORT (the only validator; hermetic)"
+  ( cd "$RUN" && nohup surfpool start --offline --no-tui --no-deploy --no-studio --port "$RPC_PORT" --ws-port $((RPC_PORT+1)) --log-path ./surfpool-logs > surfpool.log 2>&1 & echo $! > "$RUN/pids/surfpool" )
+  wait_rpc "$RPC"
+
+  log "sandbox: throwaway keys + local Sim-USDC mint"
   [[ -f "$RUN/authority.json" ]] || solana-keygen new --no-bip39-passphrase -s -o "$RUN/authority.json" >/dev/null
-  (cd "$H" && npx tsx lib/sandbox.ts "$RUN" "$RPC" "$MRPC")
+  (cd "$H" && npx tsx lib/sandbox.ts "$RUN" "$RPC" "$RPC")
 
   log "install + byte-verify candidate programs"
   (cd "$H" && npx tsx lib/install-programs.ts "$RPC" "$(solana-keygen pubkey "$RUN/authority.json")" "$RUN/programs.json")
+
+  log "mainnet DEX pool snapshot → local validator (price source for seed + keeper)"
+  (cd "$H" && npx tsx lib/mainnet-snapshot.ts "$RPC" "$RUN/cache/mainnet-dex.json")
 
   log "P0a seed (copy of $SEED_KIT, sha recorded) under the sandbox HOME"
   mkdir -p "$RUN/seed-kit/lib"
@@ -77,7 +84,7 @@ if [[ "$STAGE" == all || "$STAGE" == setup ]]; then
 HOME=$RUN/home
 DEVNET_RPC_URL=$RPC
 ALLOW_INSECURE_LOCAL_RPC=true
-MAINNET_RPC_URL=$MRPC
+MAINNET_RPC_URL=$RPC
 KEEPER_KEYPAIR_PATH=$RUN/home/.config/solana/percolator-v17-devnet.json
 REGISTRY_PATH=$RUN/keeper-registry.json
 CC_HEALTH_PORT=$KEEPER_HEALTH_PORT
@@ -88,14 +95,14 @@ LP_FEE_CRANK_INTERVAL_MS=15000
 CRANK_INTERVAL_MS=10000
 TSX_DISABLE_CACHE=1
 ENV
-  : > "$RUN/keeper.log"; bash "$H/lib/keeper-ctl.sh" stop >/dev/null; bash "$H/lib/keeper-ctl.sh" start
+  : > "$RUN/keeper.log"; bash "$H/lib/keeper-ctl.sh" start
 
   log "app ($APP_DIR @ $(git -C "$APP_DIR" rev-parse --short HEAD)) — env contract p0b §1 + slab-meta overlay"
   bash "$H/lib/app-env.sh" "$APP_DIR/app" "$RUN" "$RPC_PORT"
   (cd "$H" && npx tsx lib/app-overlay.ts "$RUN/seed-state.json" "$APP_DIR/app")
-  (cd "$APP_DIR/app" && nohup npx next dev -p "$APP_PORT" > "$RUN/app.log" 2>&1 &)
-  for _ in $(seq 1 120); do curl -sf -m 5 "http://localhost:$APP_PORT/api/health" >/dev/null && break; sleep 2; done
-  curl -s -m 240 "http://localhost:$APP_PORT/api/markets" -o "$RUN/markets.json" -w 'markets api %{http_code} %header{x-percolator-data-source}\n'
+  ( cd "$APP_DIR/app" && nohup node_modules/.bin/next dev -p "$APP_PORT" > "$RUN/app.log" 2>&1 & echo $! > "$RUN/pids/app" )
+  for _ in $(seq 1 150); do curl -sf -m 5 "http://localhost:$APP_PORT/api/health" >/dev/null && break; sleep 2; done
+  curl -s -m 300 "http://localhost:$APP_PORT/api/markets" -o "$RUN/markets.json" -w 'markets api %{http_code} %header{x-percolator-data-source}\n'
 fi
 
 [[ "$STAGE" == setup ]] && { log "setup done (services left running)"; exit 0; }
@@ -104,5 +111,5 @@ log "journeys: chain-level (on-chain asserts)"
 log "journeys: UI (Playwright + test wallet, on-chain asserts)"
 (cd "$H" && npx playwright test -c playwright.config.ts) || UI_FAIL=1
 log "done: chain=${CHAIN_FAIL:-0} ui=${UI_FAIL:-0}  results → $RUN/results.json"
-[[ $KEEP == 1 ]] || stop_all
+[[ $KEEP == 1 || "$STAGE" == journeys ]] || stop_all
 [[ -z "${CHAIN_FAIL:-}${UI_FAIL:-}" ]]

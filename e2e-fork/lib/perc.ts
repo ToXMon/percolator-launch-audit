@@ -32,7 +32,7 @@ import { assertLocal, rpc } from "./chain.ts";
 
 export const HARNESS = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
 export const RUN = process.env.RUN_DIR ?? path.join(HARNESS, ".run");
-export const RPC = process.env.RPC ?? "http://127.0.0.1:28899";
+export const RPC = process.env.RPC ?? "http://127.0.0.1:38599";
 export const WRAPPER = new PublicKey(process.env.WRAPPER_PROGRAM_ID ?? "ETDLAdiAyWnEUngspYczTXUceT6X8f92eZQvr8nmSkWB");
 export const STAKE = new PublicKey("GCHhcgwPyrai8SWHEVWw3odedguFXEtJobNnWSfWBCU3");
 export const NFT = new PublicKey("CNGBPZRALk9Xu8BdgWNyrLJ7daQ9eJYFf1GnEEC7YCU3");
@@ -334,10 +334,33 @@ export function expireBucketIx(m: SeedMarket, domain: number) {
 }
 export { ACCOUNTS_WITHDRAW_CREATOR_FEE, encodeWithdrawCreatorFee, deriveLpVaultRegistry, getAssociatedTokenAddressSync, TOKEN_PROGRAM_ID };
 
-/** surfpool time travel: advance N slots (local cheatcode). */
-export async function advanceSlots(n: number): Promise<void> {
-  const s = await conn.getSlot("confirmed");
-  await rpc(RPC, "surfnet_timeTravel", [{ absoluteSlot: s + n }]).catch(async () => rpc(RPC, "surfnet_timeTravel", [{ slot: s + n }]));
+/** Wait (real time, ~400 ms/slot) until the chain has advanced N slots. surfpool --offline
+ *  cannot time-travel (slotsInEpoch=0 → time_travel.rs:101 panics), and real elapsed
+ *  slots are the honest model of "the keeper was down for N minutes" anyway. */
+export async function advanceSlots(n: number, maxMs = 20 * 60_000): Promise<void> {
+  const target = (await conn.getSlot("confirmed")) + n;
+  const t0 = Date.now();
+  while ((await conn.getSlot("confirmed")) < target && Date.now() - t0 < maxMs) await sleep(2000);
 }
 export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 export const j = (x: unknown) => JSON.stringify(x, (_, v) => (typeof v === "bigint" ? v.toString() : v));
+
+/** Portfolios owned by `owner` in market `m` (on-chain scan; used to assert UI-created accounts). */
+export async function findPortfolios(owner: PublicKey, m: SeedMarket): Promise<PublicKey[]> {
+  const accs = await conn.getProgramAccounts(WRAPPER, { filters: [{ dataSize: V17_PORTFOLIO_ACCOUNT_LEN }] });
+  const out: PublicKey[] = [];
+  for (const a of accs) {
+    try {
+      const p = parsePortfolioV17(new Uint8Array(a.account.data)) as any;
+      if (p.owner.equals(owner) && p.marketGroupId.equals(pk(m.slab))) out.push(a.pubkey);
+    } catch { /* not a portfolio */ }
+  }
+  return out;
+}
+/** Instructions (program + tag byte) of a landed tx — proves what the wallet actually signed. */
+export async function txIxs(sig: string): Promise<{ program: string; tag: number }[]> {
+  const t = await conn.getTransaction(sig, { commitment: "confirmed", maxSupportedTransactionVersion: 0 });
+  if (!t) return [];
+  const keys = t.transaction.message.getAccountKeys().staticAccountKeys;
+  return t.transaction.message.compiledInstructions.map((ix) => ({ program: keys[ix.programIdIndex].toBase58(), tag: ix.data[0] }));
+}

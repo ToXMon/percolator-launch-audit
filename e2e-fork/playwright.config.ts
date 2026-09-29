@@ -8,7 +8,7 @@ export default defineConfig({
   outputDir: "./.run/pw-artifacts",
   reporter: [["list"], ["json", { outputFile: "./.run/pw-results.json" }], ["html", { outputFolder: "./.run/pw-report", open: "never" }]],
   use: {
-    baseURL: process.env.E2E_APP_URL ?? "http://localhost:3290",
+    baseURL: process.env.E2E_APP_URL ?? "http://localhost:38590",
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
     video: "off",

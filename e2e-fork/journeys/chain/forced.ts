@@ -41,30 +41,56 @@ function finalizeResetSideIx(slab: PublicKey, side: 0 | 1): TransactionInstructi
   return new TransactionInstruction({ programId: P.WRAPPER, keys: [{ pubkey: slab, isSigner: false, isWritable: true }], data });
 }
 
-/** F1: lapse the SHORT domain's backing bucket; prove a short open is blocked; prove Expire+open in one tx lands. */
-export async function lapsedBucket(sym: string) {
+/**
+ * F1: lapse a backing bucket (domain `d`) by surgery; probe which user/keeper flows it blocks
+ * (negative controls), then prove [ExpireBackingBucket(d) + that flow] lands in ONE tx.
+ */
+export async function lapsedBucket(sym: string, d: 0 | 1 = 1) {
   const J = "F1-lapsed-bucket";
   const m = P.markets()[sym];
   keeper("stop");
   try {
-    const t = await P.newWallet({ usdc: 2_000_000_000n });
+    const t = await P.newWallet({ usdc: 3_000_000_000n });
     const port = await P.createPortfolio(t, m);
     await P.mustSend("deposit", [await P.depositIx(t.publicKey, m, port, 1_000_000_000n)], [t]);
     const st0 = await P.readMarket(m);
-    const off = ENGINE0 + V17_ENGINE_BACKING_SHORT_REL + BB_EXPIRY;
+    const off = ENGINE0 + (d === 0 ? V17_ENGINE_BACKING_LONG_REL : V17_ENGINE_BACKING_SHORT_REL) + BB_EXPIRY;
     await patchSlab(P.pk(m.slab), [[off, u64(st0.engineSlot - 1n)]]);
+    await P.sleep(1500);
     const st1 = await P.readMarket(m);
-    const b1 = st1.buckets.find((b) => b.domain === 1)!;
-    check(J, sym, "surgery: domain-1 bucket lapsed (Fresh, expiry < now)", b1.lapsed, "lapsed=true", `status=${b1.status} expiry=${b1.expiry} engineSlot=${st1.engineSlot}`);
+    const b1 = st1.buckets.find((b) => b.domain === d)!;
+    check(J, sym, `surgery: domain-${d} bucket lapsed (Fresh, expiry < now)`, b1.lapsed, "lapsed=true", `status=${b1.status} expiry=${b1.expiry} engineSlot=${st1.engineSlot}`);
     const q = await P.qForUsd(m, 100);
-    const alone = await P.send([await P.tradeIx(t.publicKey, m, port, -q)], [t], { simulateOnly: true });
-    const code = P.customCode(alone.err);
-    check(J, sym, "negative control: short open alone is blocked (Custom 19/21)", !alone.ok && (code === 19 || code === 21), "Custom(19|21)", `${alone.err}`);
-    const healed = await P.send([P.expireBucketIx(m, 1), await P.tradeIx(t.publicKey, m, port, -q)], [t]);
+    const reg = await P.readLpVault(m);
+    const flows: [string, () => Promise<import("@solana/web3.js").TransactionInstruction[]>][] = [
+      ["open long", async () => [await P.tradeIx(t.publicKey, m, port, q)]],
+      ["open short", async () => [await P.tradeIx(t.publicKey, m, port, -q)]],
+      ["Earn deposit", async () => (await P.lpVaultDepositIxs(t.publicKey, m, 100_000_000n, reg.domain)).ixs],
+      ["permissionless crank", async () => [P.crankIx(t.publicKey, m)]],
+      ["withdraw 1 USDC", async () => [await P.withdrawIx(t.publicKey, m, port, 1_000_000n)]],
+    ];
+    const blocked: string[] = [];
+    for (const [name, build] of flows) {
+      const r = await P.send(await build(), [t], { simulateOnly: true });
+      record({ journey: J, market: sym, step: `probe with lapsed d${d}: ${name}`, ok: true, actual: r.ok ? "not blocked" : `blocked ${r.err}` });
+      if (!r.ok) blocked.push(name);
+    }
+    check(J, sym, "negative control: the lapsed bucket blocks at least one flow", blocked.length > 0, "≥1 blocked (19/21)", blocked.join(", ") || "nothing blocked");
+    for (const name of blocked) {
+      const build = flows.find((f) => f[0] === name)![1];
+      const r = await P.send([P.expireBucketIx(m, d), ...(await build())], [t], { simulateOnly: true });
+      check(J, sym, `self-heal (sim): [ExpireBackingBucket(d${d}) + ${name}] in ONE tx`, r.ok, "ok", r.ok ? "ok" : `${r.err}`);
+    }
+    const target = blocked.find((n) => n.startsWith("open")) ?? blocked[0];
+    if (target) {
+      const build = flows.find((f) => f[0] === target)![1];
+      const healed = await P.send([P.expireBucketIx(m, d), ...(await build())], [t]);
+      const st2 = await P.readMarket(m);
+      const bb = st2.buckets.find((b) => b.domain === d)!;
+      check(J, sym, `self-heal (landed): [Expire(d${d}) + ${target}] one tx`, healed.ok && !bb.lapsed && bb.expiry > st2.chainSlot,
+        `ok, d${d} no longer lapsed (re-funded or Expired)`, `${healed.ok ? "ok" : healed.err} d${d}=${bb.status} expiry=${bb.expiry}`, healed.sig ? [healed.sig] : []);
+    }
     const p = await P.readPortfolio(port);
-    const st2 = await P.readMarket(m);
-    check(J, sym, "self-heal: [ExpireBackingBucket(d1) + open short] lands in ONE tx", healed.ok && p.legs.length === 1 && p.legs[0].basisPosQ < 0n,
-      "ok, 1 short leg", `${healed.ok ? "ok" : healed.err} legs=${p.legs.length} d1=${st2.buckets.find((b) => b.domain === 1)?.status}`, healed.sig ? [healed.sig] : []);
     if (p.legs[0]) await P.send([await P.tradeIx(t.publicKey, m, port, -p.legs[0].basisPosQ)], [t]);
   } finally { keeper("start"); }
 }
@@ -94,7 +120,7 @@ export async function resetPendingSide(sym: string) {
 }
 
 /** F6: stop the keeper, advance the chain, observe the lag, restart, observe recovery. */
-export async function keeperOutage(syms: string[], slots = 1500) {
+export async function keeperOutage(syms: string[], slots = 750 /* ≈5 min */) {
   const J = "F6-keeper-outage";
   const ms = syms.map((s) => P.markets()[s]);
   keeper("stop");
@@ -133,15 +159,15 @@ export async function bankruptLiquidation(sym = "SOL", dropPct = 9) {
   const J = "F5-bankrupt-liquidation";
   const m = P.markets()[sym];
   if (m.dexType !== "raydium-clmm") throw new Error("F5 implemented for raydium-clmm pools");
-  const MRPC = process.env.MRPC ?? "http://127.0.0.1:38899";
+  const MRPC = P.RPC; // DEX pools are loaded into the single local validator
   const t = await P.newWallet({ usdc: 2_000_000_000n });
   const port = await P.createPortfolio(t, m);
   const dep = 100_000_000n; // $100
   await P.mustSend("deposit", [await P.depositIx(t.publicKey, m, port, dep)], [t]);
-  // ~18x of $100
-  const sig = await P.mustSend("open long", [await P.tradeIx(t.publicKey, m, port, await P.qForUsd(m, 1800))], [t]);
+  // ~14x of $100 (SOL imr 500 bps; app caps at 15.01x)
+  const sig = await P.mustSend("open long", [await P.tradeIx(t.publicKey, m, port, await P.qForUsd(m, 1400))], [t]);
   const p0 = await P.readPortfolio(port);
-  check(J, sym, "open ~18x long", p0.legs.length === 1, "1 leg", `basisPosQ=${p0.legs[0]?.basisPosQ} capital=${p0.capital}`, [sig]);
+  check(J, sym, "open ~14x long", p0.legs.length === 1, "1 leg", `basisPosQ=${p0.legs[0]?.basisPosQ} capital=${p0.capital}`, [sig]);
   // move the DEX price
   const pool = new PublicKey(m.pool);
   const mc = new (await import("@solana/web3.js")).Connection(MRPC, "confirmed");
@@ -156,9 +182,8 @@ export async function bankruptLiquidation(sym = "SOL", dropPct = 9) {
   record({ journey: J, market: sym, step: `DEX price lowered ${dropPct}% on mainnet fork`, ok: true, actual: `sqrt ${sqrt}→${ns}` });
   const mark0 = (await P.readMarket(m)).markE6;
   let liquidated = false; let last: P.PortState | null = null; let st: P.MarketState | null = null;
-  for (let i = 0; i < 60 && !liquidated; i++) {
-    await P.advanceSlots(120);
-    await P.sleep(4000);
+  for (let i = 0; i < 90 && !liquidated; i++) {
+    await P.sleep(8000);
     last = await P.readPortfolio(port);
     st = await P.readMarket(m);
     liquidated = last.legs.length === 0;

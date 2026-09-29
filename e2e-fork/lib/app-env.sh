@@ -5,6 +5,7 @@ APP="$1"; RUN="$2"; P="${3:-28899}"
 cat > "$APP/.env.local" <<ENV
 # e2e-fork harness — LOCAL FORK ONLY (generated; throwaway keys)
 NEXT_PUBLIC_DEFAULT_NETWORK=devnet
+NEXT_PUBLIC_ALLOW_PROGRAM_ID_OVERRIDE=1
 DEVNET_RPC_URL=http://127.0.0.1:$P
 RPC_UPSTREAM_ORIGIN=http://localhost
 NEXT_PUBLIC_SOLANA_WS_URL=ws://localhost:$((P+1))

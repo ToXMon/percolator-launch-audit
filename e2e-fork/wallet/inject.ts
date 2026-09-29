@@ -8,23 +8,26 @@
 import type { Page } from "@playwright/test";
 import { Keypair, Transaction, VersionedTransaction } from "@solana/web3.js";
 import nacl from "tweetnacl";
+import bs58 from "bs58";
 
 export const WALLET_NAME = "E2E Test Wallet";
 
-export interface SignLogEntry { at: number; kind: "tx" | "msg"; bytes: number }
+export interface SignLogEntry { at: number; kind: "tx" | "msg"; bytes: number; sig?: string }
 
 export async function installTestWallet(page: Page, kp: Keypair, opts: { autoConnect?: boolean } = {}): Promise<SignLogEntry[]> {
   const log: SignLogEntry[] = [];
   await page.exposeFunction("__e2eSignTx", async (b64: string): Promise<string> => {
     const raw = Buffer.from(b64, "base64");
-    log.push({ at: Date.now(), kind: "tx", bytes: raw.length });
+    const entry: SignLogEntry = { at: Date.now(), kind: "tx", bytes: raw.length };
+    log.push(entry);
     // versioned first (message prefix bit 0x80), else legacy
     try {
       const vt = VersionedTransaction.deserialize(raw);
-      if (vt.version !== "legacy") { vt.sign([kp]); return Buffer.from(vt.serialize()).toString("base64"); }
+      if (vt.version !== "legacy") { vt.sign([kp]); entry.sig = bs58.encode(vt.signatures[0]); return Buffer.from(vt.serialize()).toString("base64"); }
     } catch { /* legacy */ }
     const t = Transaction.from(raw);
     t.partialSign(kp);
+    entry.sig = t.signature ? bs58.encode(t.signature) : undefined;
     return t.serialize({ requireAllSignatures: false, verifySignatures: false }).toString("base64");
   });
   await page.exposeFunction("__e2eSignMsg", async (b64: string): Promise<string> => {

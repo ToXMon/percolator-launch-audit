@@ -6,6 +6,9 @@ import Link from 'next/link';
 import dynamic from 'next/dynamic';
 import { SlabProvider, useSlabState } from '@/components/providers/SlabProvider';
 import { useInsuranceLP } from '@/hooks/useInsuranceLP';
+import { useLpCostBasis } from '@/hooks/useLpCostBasis';
+import { useWalletCompat } from '@/hooks/useWalletCompat';
+import { computeExactLpEarned } from '@/lib/lp-earned';
 import { useEngineState } from '@/hooks/useEngineState';
 import { useEarnStats, type MarketVaultInfo } from '@/hooks/useEarnStats';
 import { useTokenMeta } from '@/hooks/useTokenMeta';
@@ -120,6 +123,21 @@ function VaultDetailInner({ slabAddress }: { slabAddress: string }) {
     refreshState,
   } = useInsuranceLP();
   const { engine, totalOI, vault: engineVault } = useEngineState();
+
+  // percolator-indexer#207: exact earned = value − indexed cost basis (+ realized).
+  const walletCompat = useWalletCompat();
+  const lpClaimShares = lpVaultState.userLpBalance + lpVaultState.pendingRedemptionShares;
+  const lpCostBasis = useLpCostBasis(slabAddress, walletCompat.publicKey?.toBase58() ?? null, lpClaimShares);
+  const lpEarned = useMemo(
+    () => computeExactLpEarned({
+      basis: lpCostBasis,
+      userLpBalance: lpVaultState.userLpBalance,
+      pendingRedemptionShares: lpVaultState.pendingRedemptionShares,
+      vaultTotalAtoms: lpVaultState.vaultTotalAtoms,
+      lpSupply: lpVaultState.lpSupply,
+    }),
+    [lpCostBasis, lpVaultState.userLpBalance, lpVaultState.pendingRedemptionShares, lpVaultState.vaultTotalAtoms, lpVaultState.lpSupply],
+  );
 
   // BUG-5 FIX: resolve actual collateral mint from on-chain slab data.
   // Previously hardcoded to USDC — wrong for coin-margined markets.
@@ -368,6 +386,7 @@ function VaultDetailInner({ slabAddress }: { slabAddress: string }) {
               collateralSymbol={collateralSymbol}
               redemptionRateE6={lpVaultState.vaultSharePriceE6}
               loading={loading}
+              earned={lpEarned}
             />
           </ScrollReveal>
 

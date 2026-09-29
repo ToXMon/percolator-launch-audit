@@ -3,6 +3,7 @@
 import { AnimatedNumber } from '@/components/ui/AnimatedNumber';
 import { bigintRatio } from "@/lib/formatters";
 import { ShimmerSkeleton } from '@/components/ui/ShimmerSkeleton';
+import type { LpEarned } from '@/lib/lp-earned';
 
 
 interface LpPositionDashboardProps {
@@ -22,7 +23,19 @@ interface LpPositionDashboardProps {
   redemptionRateE6: bigint;
   /** Loading */
   loading: boolean;
+  /**
+   * Exact earnings from the indexer's cost basis (percolator-indexer#207), or
+   * why they are unavailable. Omitted -> the row is not rendered.
+   */
+  earned?: LpEarned;
 }
+
+const EARNED_UNAVAILABLE_REASON: Record<Extract<LpEarned, { kind: 'unavailable' }>['reason'], string> = {
+  'no-data': 'Not indexed yet',
+  'basis-unknown': 'LP moved outside the vault — cost unknown',
+  'out-of-sync': 'Updating…',
+  'no-supply': 'Vault empty',
+};
 
 export function LpPositionDashboard({
   userLpBalance,
@@ -33,6 +46,7 @@ export function LpPositionDashboard({
   collateralSymbol,
   redemptionRateE6,
   loading,
+  earned,
 }: LpPositionDashboardProps) {
   const divisor = 10n ** BigInt(decimals);
   const hasPosition = userLpBalance > 0n;
@@ -114,6 +128,26 @@ export function LpPositionDashboard({
               </div>
             </div>
 
+            {earned && (
+              <div className="mb-5 flex items-baseline justify-between" data-testid="lp-earned">
+                <div className="text-[10px] uppercase tracking-[0.2em] text-[var(--text-secondary)]">
+                  Earned
+                </div>
+                {earned.kind === 'exact' ? (
+                  <div
+                    className={`text-sm font-medium ${earned.earnedAtoms < 0n ? 'text-[var(--short)]' : 'text-[var(--long)]'}`}
+                    title={`Position value minus what you paid (${formatRaw(earned.costBasisAtoms, decimals)} ${collateralSymbol}), plus realized from past redemptions (${formatSigned(earned.realizedAtoms, decimals)}). Fees compound into the share price; they are paid out on redemption.`}
+                  >
+                    {formatSigned(earned.earnedAtoms, decimals)} {collateralSymbol}
+                  </div>
+                ) : (
+                  <div className="text-[12px] text-[var(--text-muted)]">
+                    — <span className="ml-1">{EARNED_UNAVAILABLE_REASON[earned.reason]}</span>
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* Metrics grid */}
             <div className="grid grid-cols-2 gap-4">
               <MetricCell
@@ -191,4 +225,10 @@ function formatRaw(raw: bigint, decimals: number): string {
   const frac = raw % divisor;
   const fracStr = frac.toString().padStart(decimals, '0').replace(/0+$/, '');
   return fracStr ? `${whole}.${fracStr}` : whole.toString();
+}
+
+/** Signed amount with an explicit + / − sign (earned can be negative after a loss). */
+function formatSigned(raw: bigint, decimals: number): string {
+  if (raw === 0n) return '0';
+  return raw < 0n ? `−${formatRaw(-raw, decimals)}` : `+${formatRaw(raw, decimals)}`;
 }

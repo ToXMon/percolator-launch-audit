@@ -196,3 +196,131 @@ export async function bankruptLiquidation(sym = "SOL", dropPct = 9) {
   const d2 = Buffer.from((await mc.getAccountInfo(pool))!.data); orig.copy(d2, 253);
   await rpc(MRPC, "surfnet_setAccount", [pool.toBase58(), { data: d2.toString("hex"), owner: ai.owner.toBase58(), lamports: ai.lamports }]);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+/**
+ * F3 (Sieve F-3): one bankruptcy + a large price move freezes the market; the
+ * permissionless-resolve escape then lets every user withdraw.
+ * Repro shape from independent-test-results-2026-09-30.md §F-3: two opposite positions (a
+ * TradeCpi vs the LP and a TradeNoCpi user-vs-user), the oracle authority pushes a ~-34% mark,
+ * permissionless cranks walk the engine to it (1 bps/slot cap on these markets → real time),
+ * FinalizeResetSide both sides; then probe open / reduce / withdraw.
+ * Escape: the market's OWN permissionless_resolve_stale_slots is recorded (the seed is to set
+ * it; 0 = no exit). If 0, it is set by RECORDED surgery to MIN (9,000) to exercise the path, and
+ * a dead feed is simulated by moving last_good_oracle_slot back ≥ 9,000 slots (recorded).
+ */
+import { encodeTradeNoCpi, encodePushAuthMark, ACCOUNTS_PUSH_AUTH_MARK, ACCOUNTS_TRADE_NOCPI, ACCOUNTS_CLOSE_RESOLVED, buildIx, buildAccountMetas, parseWrapperConfigV17, parseAssetControlSequencesV17, V17_HEADER_LEN } from "@percolatorct/sdk";
+
+function cfgFieldOffset(d: Buffer, field: "permissionlessResolveStaleSlots" | "lastGoodOracleSlot"): number {
+  const cur = (parseWrapperConfigV17(new Uint8Array(d), V17_HEADER_LEN) as any)[field] as bigint;
+  const probe = 0x1234_5678_9abcn;
+  for (let o = V17_HEADER_LEN; o < V17_HEADER_LEN + 2048; o++) {
+    const t = Buffer.from(d); t.writeBigUInt64LE(probe, o);
+    try { if ((parseWrapperConfigV17(new Uint8Array(t), V17_HEADER_LEN) as any)[field] === probe && t.readBigUInt64LE(o) !== cur) return o; } catch { /* */ }
+  }
+  throw new Error(`offset of ${field} not found`);
+}
+async function pushMark(m: P.SeedMarket, markE6: bigint) {
+  const d = new Uint8Array((await P.conn.getAccountInfo(P.pk(m.slab)))!.data);
+  const seq = parseAssetControlSequencesV17(d, ENGINE0 - V17_ASSET_SLOT_WRAPPER_LEN).oracleObservation + 1n;
+  const marketId = (await P.readMarket(m)).marketId;
+  return P.send([buildIx({ programId: P.WRAPPER, keys: buildAccountMetas(ACCOUNTS_PUSH_AUTH_MARK, { oracleAuthority: P.admin.publicKey, market: P.pk(m.slab) }),
+    data: encodePushAuthMark({ assetIndex: 0, marketId, nowSlot: BigInt(await P.conn.getSlot("confirmed")), markE6, observationSequence: seq }) })], [P.admin]);
+}
+function closeResolvedIx(owner: PublicKey, m: P.SeedMarket, port: PublicKey) {
+  const data = Buffer.alloc(17); data[0] = 30; // CloseResolved { fee_rate_per_slot: u128 = 0 }
+  return buildIx({ programId: P.WRAPPER, keys: buildAccountMetas(ACCOUNTS_CLOSE_RESOLVED, {
+    owner, market: P.pk(m.slab), portfolio: port, destToken: P.getAssociatedTokenAddressSync(P.USDC, owner, false, P.TOKEN_PROGRAM_ID),
+    vaultToken: P.pk(m.vaultAta), vaultAuthority: P.pk(m.vaultAuth), tokenProgram: P.TOKEN_PROGRAM_ID } as any), data });
+}
+
+export async function freezeAndPermissionlessResolve(sym = "Percolator", dropPct = 34) {
+  const J = "F3-freeze-permissionless-resolve";
+  const m = P.markets()[sym];
+  keeper("stop");
+  const users: { name: string; kp: import("@solana/web3.js").Keypair; port: PublicKey; dep: bigint }[] = [];
+  try {
+    for (const [name, dep] of [["A-long-vs-LP", 200_000_000n], ["B-long", 1_000_000_000n], ["C-short", 1_000_000_000n]] as const) {
+      const kp = await P.newWallet({ usdc: dep + 10_000_000n });
+      const port = await P.createPortfolio(kp, m);
+      await P.mustSend(`${name} deposit`, [await P.depositIx(kp.publicKey, m, port, dep)], [kp]);
+      users.push({ name, kp, port, dep });
+    }
+    const [A, B, C] = users;
+    await P.mustSend("A 9x long vs LP", [await P.tradeIx(A.kp.publicKey, m, A.port, await P.qForUsd(m, 1800))], [A.kp]);
+    const st0 = await P.readMarket(m);
+    const q = await P.qForUsd(m, 500);
+    const [ib, ic] = [await P.readPortfolio(B.port), await P.readPortfolio(C.port)];
+    const nocpi = buildIx({ programId: P.WRAPPER, keys: buildAccountMetas(ACCOUNTS_TRADE_NOCPI, { signerA: B.kp.publicKey, signerB: C.kp.publicKey, market: P.pk(m.slab), accountA: B.port, accountB: C.port }),
+      data: encodeTradeNoCpi({ accountAPortfolioId: ib.portfolioId, accountAPositionEpoch: ib.positionEpoch, accountBPortfolioId: ic.portfolioId, accountBPositionEpoch: ic.positionEpoch, assetIndex: 0, marketId: st0.marketId, sizeQ: q, execPrice: st0.markE6, feeBps: 30n, backingFeeCapBps: 0 }) });
+    const r0 = await P.send([nocpi], [B.kp, C.kp]);
+    check(J, sym, "setup: A long vs LP (TradeCpi) + B long / C short (TradeNoCpi)", r0.ok && (await P.readPortfolio(A.port)).legs.length === 1, "both land", `${r0.ok ? "ok" : r0.err}`, r0.sig ? [r0.sig] : []);
+
+    // walk the ENGINE effective price down: push the target, crank, repeat (1 bps/slot engine cap).
+    // The engine effective price is located as the engine-region u64 that equals the pre-push
+    // mark and then moves toward the target (the wrapper's markEwma jumps to the push at once).
+    const target = (st0.markE6 * BigInt(100 - dropPct)) / 100n;
+    const d0 = Buffer.from((await P.conn.getAccountInfo(P.pk(m.slab)))!.data);
+    const cands: number[] = [];
+    for (let o = ENGINE0; o < ENGINE0 + 1300; o++) if (d0.readBigUInt64LE(o) === st0.markE6) cands.push(o);
+    const t0 = Date.now(); let eff = st0.markE6; let effOff = -1;
+    while (Date.now() - t0 < 50 * 60_000) {
+      await pushMark(m, target);
+      await P.send([P.crankIx(P.admin.publicKey, m)], [P.admin]);
+      const d = Buffer.from((await P.conn.getAccountInfo(P.pk(m.slab)))!.data);
+      if (effOff < 0) effOff = cands.find((o) => { const v = d.readBigUInt64LE(o); return v < st0.markE6 && v >= target; }) ?? -1;
+      if (effOff >= 0) eff = d.readBigUInt64LE(effOff);
+      if (effOff >= 0 && eff <= (target * 1005n) / 1000n) break;
+      await P.sleep(6000);
+    }
+    check(J, sym, `engine effective price walked ~-${dropPct}% (oracle-authority pushes + permissionless cranks)`, effOff >= 0 && eff <= (target * 1005n) / 1000n,
+      `effective ≤ ${target}`, `effective ${st0.markE6}→${eff} @engine+${effOff - ENGINE0} in ${Math.round((Date.now() - t0) / 60000)} min (cands ${cands.map((o) => o - ENGINE0).join(",")})`);
+    for (const side of [0, 1] as const) await P.send([finalizeResetSideIx(P.pk(m.slab), side)], [P.admin]);
+    for (let i = 0; i < 3; i++) await P.send([P.crankIx(P.admin.publicKey, m)], [P.admin]);
+    const stF = await P.readMarket(m);
+    const pa = await P.readPortfolio(A.port);
+    record({ journey: J, market: sym, step: "state after move", ok: true, actual: `A capital=${pa.capital} pnl=${pa.pnl} legs=${pa.legs.length}; buckets=${JSON.stringify(stF.buckets.filter((b) => b.domain < 2).map((b) => [b.domain, b.status]))} sides=${stF.sideMode.long}/${stF.sideMode.short}` });
+
+    // freeze probes
+    const fresh = await P.newWallet({ usdc: 200_000_000n });
+    const fp = await P.createPortfolio(fresh, m);
+    await P.send([await P.depositIx(fresh.publicKey, m, fp, 100_000_000n)], [fresh]);
+    const pOpen = await P.send([await P.tradeIx(fresh.publicKey, m, fp, await P.qForUsd(m, 20))], [fresh], { simulateOnly: true });
+    const pc = await P.readPortfolio(C.port);
+    const pReduce = pc.legs[0] ? await P.send([await P.tradeIx(C.kp.publicKey, m, C.port, -(pc.legs[0].basisPosQ / 4n))], [C.kp], { simulateOnly: true }) : { ok: false, err: "no leg", logs: [] };
+    const pWd = await P.send([await P.withdrawIx(C.kp.publicKey, m, C.port, 1_000_000n)], [C.kp], { simulateOnly: true });
+    const frozen = !pOpen.ok && !pReduce.ok && !pWd.ok;
+    record({ journey: J, market: sym, step: "freeze probes (F-3 predicts open 21, reduce 21, withdraw 19)", ok: true,
+      actual: `open=${pOpen.ok ? "ok" : pOpen.err} reduce=${pReduce.ok ? "ok" : pReduce.err} withdraw=${pWd.ok ? "ok" : pWd.err} → ${frozen ? "FROZEN (F-3 reproduced)" : "not frozen"}` });
+
+    // escape
+    const raw = Buffer.from((await P.conn.getAccountInfo(P.pk(m.slab)))!.data);
+    const staleCfg = (parseWrapperConfigV17(new Uint8Array(raw), V17_HEADER_LEN) as any).permissionlessResolveStaleSlots as bigint;
+    check(J, sym, "seeded market has a permissionless exit (permissionless_resolve_stale_slots ≠ 0)", staleCfg !== 0n, "≥ 9000 (seed to set)", `${staleCfg} (seed ${"ca17a8c2"})`);
+    const stale = staleCfg !== 0n ? staleCfg : 9_000n;
+    while (BigInt(await P.conn.getSlot("confirmed")) < stale + 50n) await P.sleep(5000); // young offline chain
+    const slot = BigInt(await P.conn.getSlot("confirmed"));
+    const edits: [number, Buffer][] = [[cfgFieldOffset(raw, "lastGoodOracleSlot"), u64(slot - stale - 1n)]];
+    if (staleCfg === 0n) edits.push([cfgFieldOffset(raw, "permissionlessResolveStaleSlots"), u64(stale)]);
+    await patchSlab(P.pk(m.slab), edits);
+    record({ journey: J, market: sym, step: "RECORDED surgery for the escape", ok: true, actual: `${staleCfg === 0n ? "permissionless_resolve_stale_slots 0→9000; " : ""}last_good_oracle_slot → now-${stale + 1n} (simulated dead feed ≥ stale window)` });
+    const rd = Buffer.alloc(9); rd[0] = 39; rd.writeBigUInt64LE(BigInt(await P.conn.getSlot("confirmed")), 1);
+    const caller = await P.newWallet({ sol: 1 });
+    const res = await P.send([new TransactionInstruction({ programId: P.WRAPPER, keys: [{ pubkey: P.pk(m.slab), isSigner: false, isWritable: true }], data: rd })], [caller]);
+    const { parseBackingBucketsV17 } = await import("@percolatorct/sdk");
+    const modeAfter = parseBackingBucketsV17(new Uint8Array((await P.conn.getAccountInfo(P.pk(m.slab)))!.data)).mode;
+    check(J, sym, "anyone can ResolveStalePermissionless (tag 39) → market Resolved", res.ok && modeAfter !== 0, "ok, mode ≠ Live(0)", res.ok ? `ok (group mode ${modeAfter})` : `${res.err} ${res.logs.slice(-4).join(" | ")}`, res.sig ? [res.sig] : []);
+    if (!res.ok) return;
+
+    // every user exits
+    let paid = 0n;
+    for (const u of [...users, { name: "fresh", kp: fresh, port: fp, dep: 100_000_000n }]) {
+      const w0 = await P.usdcBalance(u.kp.publicKey);
+      const r = await P.send([closeResolvedIx(u.kp.publicKey, m, u.port)], [u.kp]);
+      const got = (await P.usdcBalance(u.kp.publicKey)) - w0; paid += got;
+      const after = await P.readPortfolio(u.port).catch(() => null);
+      check(J, sym, `${u.name}: CloseResolved withdraws after resolve`, r.ok && (after === null || after.capital === 0n), "ok, capital 0", `${r.ok ? "ok" : r.err} +${got} (deposited ${u.dep})`, r.sig ? [r.sig] : []);
+    }
+    record({ journey: J, market: sym, step: "total paid out to users", ok: true, actual: `${paid}` });
+  } finally { keeper("start"); }
+}

@@ -11,7 +11,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { PublicKey } from "@solana/web3.js";
 import { decodeAssetVaultLpP3, decodeVaultLpStateP3, deriveVaultLpStateP3 } from "@percolatorct/sdk";
-import { installTestWallet, type SignLogEntry } from "../../wallet/inject.ts";
+import { installTestWallet, type SignLogEntry, pinDexPools } from "../../wallet/inject.ts";
 import * as P from "../../lib/perc.ts";
 import { check, record } from "../../lib/results.ts";
 import { churn } from "../chain/products.ts";
@@ -65,6 +65,7 @@ test("P3-5 create-market wizard, the P3 way (vault-owned LP at launch)", async (
   const J = "P3-wizard";
   const creator = await P.newWallet({ sol: 50, usdc: 200_000_000_000n });
   const log = await installTestWallet(page, creator);
+  if (process.env.E2E_PIN_POOLS !== "0") await pinDexPools(page);
   let reg: any = null;
   page.on("request", (r) => { if (r.url().includes("/api/playground/keeper-register") && r.method() === "POST") { try { reg = JSON.parse(r.postData() ?? "{}"); } catch { /* */ } } });
   await page.goto("/create");

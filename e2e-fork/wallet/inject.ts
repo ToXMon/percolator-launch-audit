@@ -14,12 +14,13 @@ export const WALLET_NAME = "E2E Test Wallet";
 
 export interface SignLogEntry { at: number; kind: "tx" | "msg"; bytes: number; sig?: string }
 
-export async function installTestWallet(page: Page, kp: Keypair, opts: { autoConnect?: boolean } = {}): Promise<SignLogEntry[]> {
+export async function installTestWallet(page: Page, kp: Keypair, opts: { autoConnect?: boolean; beforeSign?: (raw: Buffer) => Promise<void> } = {}): Promise<SignLogEntry[]> {
   const log: SignLogEntry[] = [];
   await page.exposeFunction("__e2eSignTx", async (b64: string): Promise<string> => {
     const raw = Buffer.from(b64, "base64");
     const entry: SignLogEntry = { at: Date.now(), kind: "tx", bytes: raw.length };
     log.push(entry);
+    if (opts.beforeSign) await opts.beforeSign(raw);
     // versioned first (message prefix bit 0x80), else legacy
     try {
       const vt = VersionedTransaction.deserialize(raw);
@@ -87,4 +88,19 @@ export async function installTestWallet(page: Page, kp: Keypair, opts: { autoCon
     { address: kp.publicKey.toBase58(), pk: Array.from(kp.publicKey.toBytes()), name: WALLET_NAME, autoConnect: opts.autoConnect ?? true },
   );
   return log;
+}
+
+/**
+ * Hermetic pool pick: DexScreener (live, external) decides which pool the wizard launches on. On 2026-09-30 it
+ * ranked WIF's Meteora DAMM v1 pool first — a pool the keeper cannot price (B21) — so the wizard journeys launched
+ * orphaned markets. Keep ONLY pools this harness loaded into the validator; B21 itself is recorded separately.
+ */
+export async function pinDexPools(page: Page, allow: string[] = (process.env.E2E_POOL_ALLOW ?? "ADEjbFryutjfrJTpZfFPRMFhF7XBisPY63Awe79EVhe9,4mMDQ5kG9fFrBSQeedErsUoTBhY5KKnsKWGvenXRTwSy").split(",")): Promise<void> {
+  const keep = new Set(allow);
+  await page.route(/api\.dexscreener\.com/, async (route) => {
+    const r = await route.fetch();
+    let j: any; try { j = await r.json(); } catch { return route.fulfill({ response: r }); }
+    if (Array.isArray(j?.pairs)) j.pairs = j.pairs.filter((p: any) => keep.has(p.pairAddress));
+    return route.fulfill({ response: r, json: j });
+  });
 }

@@ -11,6 +11,7 @@ export function record(s: Omit<Step, "at">): Step {
   const st = { ...s, at: new Date().toISOString() };
   all.push(st);
   fs.writeFileSync(FILE, j(all).replace(/},{/g, "},\n{"));
+  fs.appendFileSync(FILE.replace(/\.json$/, ".jsonl"), j(st) + "\n"); // append-only copy: safe with concurrent writers
   console.log(`${st.ok ? "PASS" : "FAIL"} [${s.journey}${s.market ? `/${s.market}` : ""}] ${s.step}${s.actual ? ` — ${s.actual}` : ""}${s.err ? ` — ERR ${s.err.split("\n")[0]}` : ""}`);
   return st;
 }

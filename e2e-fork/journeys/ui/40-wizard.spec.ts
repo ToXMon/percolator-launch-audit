@@ -11,7 +11,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { PublicKey } from "@solana/web3.js";
 import { parseWrapperConfigV17, parseAssetOracleProfileV17, V17_HEADER_LEN, V17_MARKET_GROUP_OFF, V17_MARKET_GROUP_LEN } from "@percolatorct/sdk";
-import { installTestWallet } from "../../wallet/inject.ts";
+import { installTestWallet, pinDexPools } from "../../wallet/inject.ts";
 import * as P from "../../lib/perc.ts";
 import { check, record } from "../../lib/results.ts";
 
@@ -23,6 +23,7 @@ test("U6 create-market wizard end to end (UI) + trade on the new market", async 
   const J = "U6-ui-wizard";
   const creator = await P.newWallet({ sol: 50, usdc: 200_000_000_000n });
   const log = await installTestWallet(page, creator);
+  if (process.env.E2E_PIN_POOLS !== "0") await pinDexPools(page);
   let reg: Record<string, unknown> | null = null;
   page.on("request", (r) => { if (r.url().includes("/api/playground/keeper-register") && r.method() === "POST") { try { reg = JSON.parse(r.postData() ?? "{}"); } catch { /* */ } } });
   const errors: string[] = [];

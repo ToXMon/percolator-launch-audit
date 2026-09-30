@@ -183,7 +183,12 @@ test("UF3 LP depleted (UI): badge + mapped message, no raw error", async ({ page
     await shot(page, "UF3-close-while-halted");
     check(J, sym, "close still works while the LP is halted/depleted (UI)", before === 1 && after === 0, "1 → 0 legs", `${before} → ${after}`, txSigs(log).slice(-1));
   } finally {
-    await rpc(P.RPC, "surfnet_setAccount", [lp.toBase58(), { data: orig.toString("hex"), owner: ai.owner.toBase58(), lamports: ai.lamports }]);
+    // Restore ONLY the capital field. Writing back the whole pre-test snapshot would resurrect the LP leg the
+    // close above reduced, while the market's stored_pos_count already dropped it → counters disagree and every
+    // later full accrual reverts EngineCounterUnderflow (Custom 25) — a harness artifact, seen on BURNIE 2026-09-30.
+    const cur = Buffer.from((await P.conn.getAccountInfo(lp))!.data);
+    orig.copy(cur, off, off, off + 16);
+    await rpc(P.RPC, "surfnet_setAccount", [lp.toBase58(), { data: cur.toString("hex"), owner: ai.owner.toBase58(), lamports: ai.lamports }]);
   }
 });
 
@@ -216,7 +221,13 @@ test("UF4 out-of-band price → band message (P1 only)", async ({ page }) => {
     const mapped = /band|outside the (allowed )?price|price moved/i.test(body);
     const raw = /custom program error|Custom\(\d+\)/i.test(body);
     check(J, sym, "out-of-band fill (impact > 1 bps band): refused, band message shown, no raw error, no position", legs === 0 && mapped && !raw, "0 legs, band copy, no raw error", `legs=${legs} mapped=${mapped} raw=${raw} submitDisabled=${disabled} band-el=${await page.locator('[data-testid="limits-band"]').first().getAttribute("data-band-bps").catch(() => null)}`);
-  } finally { await P.send([t93(0)], [P.admin]); }
+  } finally {
+    // restore the SEEDED limits (a t93(0) restore left matcher_ext_mode 0 / side cap 1e14 on the market)
+    const L = JSON.parse((await import("node:fs")).readFileSync(`${P.RUN}/seed-state.json`, "utf8")).markets[sym].p1RiskLimits;
+    const d = Buffer.alloc(44); let o = 0; d[o++] = 93; d.writeUInt16LE(0, o); o += 2; d.writeUInt16LE(Number(L.exec_band_bps), o); o += 2; d.writeUInt32LE(Number(L.lp_exposure_k_bps), o); o += 4;
+    const w = (v: bigint) => { d.writeBigUInt64LE(v & 0xffffffffffffffffn, o); d.writeBigUInt64LE(v >> 64n, o + 8); o += 16; }; w(BigInt(L.lp_floor_atoms)); w(BigInt(L.side_oi_cap_q)); d[o++] = Number(L.matcher_ext_mode); d.writeUInt16LE(Number(L.max_requested_fee_bps), o);
+    await P.send([new TransactionInstruction({ programId: P.WRAPPER, data: d, keys: [{ pubkey: P.admin.publicKey, isSigner: true, isWritable: false }, { pubkey: programData, isSigner: false, isWritable: false }, { pubkey: P.pk(m.slab), isSigner: false, isWritable: true }] })], [P.admin]);
+  }
 });
 
 test("UF5 P1 max-size clamp (side OI cap via tag 93) → clamp notice, fill ≤ cap", async ({ page }) => {

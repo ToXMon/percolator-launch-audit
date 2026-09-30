@@ -59,7 +59,8 @@ test(`P3-1/2 Earn on a vault-owned-LP market (${SYM}): deposit → NAV; fees →
     "seniorFeeCredited ↑, share price ↑", `seniorFeeCredited ${f0.seniorFeeCreditedAtoms}→${f1?.seniorFeeCreditedAtoms ?? "(unchanged)"}; UI price ${px0}→${px1}`);
 });
 
-test("P3-5 create-market wizard, the P3 way (vault-owned LP at launch)", async ({ page }) => {
+test("P3-5 create-market wizard, the P3 way (vault-owned LP at launch)", async ({ page: firstPage, browser }) => {
+  let page = firstPage;
   test.setTimeout(900_000);
   const J = "P3-wizard";
   const creator = await P.newWallet({ sol: 50, usdc: 200_000_000_000n });
@@ -73,6 +74,9 @@ test("P3-5 create-market wizard, the P3 way (vault-owned LP at launch)", async (
   const tranche = await page.locator('[data-testid="limits-wizard-tranche"]').first().waitFor({ state: "visible", timeout: 60_000 }).then(() => true).catch(() => false);
   await shot(page, "P3-wizard-market");
   check(J, "WIF", "wizard shows the P3 tranche panel (limits-wizard-tranche)", tranche, "visible", tranche ? "visible" : "absent");
+  const pinned = await page.locator('[data-testid="limits-wizard-pinned-matcher"]').first().isVisible({ timeout: 10_000 }).catch(() => false);
+  const awaiting = await page.locator('[data-testid="limits-wizard-awaiting-protocol"]').count();
+  check(J, "WIF", "§10: limits-wizard-pinned-matcher shown; removed awaiting-protocol id absent", pinned && awaiting === 0, "pinned visible, awaiting 0", `pinned=${pinned} awaiting=${awaiting}`);
   const launch = page.getByTestId("wizard-launch");
   await launch.waitFor({ state: "visible", timeout: 60_000 }); await launch.click();
   const ok = await page.getByText(/MARKET LAUNCHED/i).first().waitFor({ state: "visible", timeout: 600_000 }).then(() => true).catch(() => false);
@@ -89,4 +93,30 @@ test("P3-5 create-market wizard, the P3 way (vault-owned LP at launch)", async (
   check(J, "WIF", "wizard market has a BOUND vault LP (vault-state PDA, junior = creator)", av.bound && !!st && st.juniorOwner.equals(creator.publicKey),
     "bound, juniorOwner = creator", `bound=${av.bound} vaultState=${!!st} junior=${st?.juniorOwner.toBase58()} juniorDeposited=${st?.juniorDepositedAtoms}`);
   fs.writeFileSync(path.join(P.RUN, "p3-wizard-market.json"), JSON.stringify({ slab, reg }));
+  // trade right after creation: NO creator activation step. The only thing between launch and the trade is
+  // what prod does automatically — keeper-register (Vercel Blob → register-poll; here: the captured payload
+  // appended to the harness keeper registry) and the keeper's first push.
+  const regP = path.join(P.RUN, "keeper-registry.json"); const kr = JSON.parse(fs.readFileSync(regP, "utf8"));
+  kr.markets.push({ label: `P3WIZ/USDC — ${reg.dexType}`, marketAddress: slab, poolAddress: reg.dexPoolAddress ?? reg.poolAddress, dexType: reg.dexType, assetIndex: 0, symbol: "P3WIZ", mainnetCa: reg.mainnetCA, collateral: P.USDC.toBase58(), registeredAt: Date.now() });
+  fs.writeFileSync(regP, JSON.stringify(kr, null, 2));
+  const tLaunch = Date.now();
+  const mk0 = { slab } as unknown as P.SeedMarket;
+  for (let i = 0; i < 40; i++) { const st = await P.readMarket(mk0).catch(() => null); if (st && st.chainSlot - st.lastGoodOracleSlot < 60n) break; await P.sleep(3000); }
+  const trader = await P.newWallet({ usdc: 1_000_000_000n });
+  const tctx = await browser.newContext(); const tp = await tctx.newPage();
+  await installTestWallet(tp, trader);
+  page = tp;
+  await page.goto(`/trade/${slab}`);
+  await page.getByTestId("deposit-amount-input").first().fill("300", { timeout: 60_000 });
+  await page.getByTestId("deposit-submit").first().click();
+  for (let i = 0; i < 30; i++) { const ps = await P.findPortfolios(trader.publicKey, mk0); if (ps.length && (await P.readPortfolio(ps[0])).capital > 0n) break; await P.sleep(3000); }
+  await page.getByTestId("trade-side-long").click({ timeout: 60_000 });
+  await page.getByTestId("trade-size-input").fill("30");
+  await page.getByTestId("trade-submit").click({ timeout: 60_000 }).catch(() => undefined);
+  if (await page.getByTestId("trade-confirm").isVisible({ timeout: 5000 }).catch(() => false)) await page.getByTestId("trade-confirm").click();
+  const mk = { slab } as unknown as P.SeedMarket;
+  let legs = 0; for (let i = 0; i < 30 && !legs; i++) { await P.sleep(3000); for (const pp of await P.findPortfolios(trader.publicKey, mk)) legs += (await P.readPortfolio(pp)).legs.length; }
+  await shot(page, "P3-wizard-trade-now");
+  const te = await page.locator('[data-testid="trade-error"]:visible').first().innerText({ timeout: 1500 }).catch(() => "");
+  check(J, "WIF", "P3 wizard market trades right after creation (no creator activation step; keeper registration + first push only)", legs > 0, "≥1 leg", `legs=${legs} after ${Math.round((Date.now() - tLaunch) / 1000)}s ${te}`);
 });

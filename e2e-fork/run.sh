@@ -39,7 +39,12 @@ kill_tree(){ local p=$1 c; for c in $(pgrep -P "$p" 2>/dev/null || true); do kil
 stop_pidfile(){ local f="$RUN/pids/$1" p; [[ -f "$f" ]] || return 0; p="$(cat "$f")"; kill_tree "$p"
   for _ in $(seq 1 15); do kill -0 "$p" 2>/dev/null || break; sleep 1; done
   kill -0 "$p" 2>/dev/null && kill -9 "$p" 2>/dev/null; rm -f "$f"; }
-stop_all(){ bash "$H/lib/keeper-ctl.sh" stop >/dev/null || true; stop_pidfile app; stop_pidfile surfpool; }
+# surfpool forks a server child that can outlive the recorded launcher PID: also stop any listener
+# on OUR ports whose cwd is OUR run dir (never anything else)
+stop_own_listeners(){ local port p; for port in "$RPC_PORT" "$APP_PORT"; do for p in $(lsof -nP -t -iTCP:"$port" -sTCP:LISTEN 2>/dev/null || true); do
+  [[ "$(lsof -a -p "$p" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')" == "$RUN"* || "$(lsof -a -p "$p" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')" == "$APP_DIR"* ]] || continue
+  kill "$p" 2>/dev/null; sleep 2; kill -0 "$p" 2>/dev/null && kill -9 "$p" 2>/dev/null; done; done; }
+stop_all(){ bash "$H/lib/keeper-ctl.sh" stop >/dev/null || true; stop_pidfile app; stop_pidfile surfpool; stop_own_listeners; }
 
 # single-instance lock (two concurrent runs share state and race the seed)
 LOCK="$RUN/.lock"
@@ -66,7 +71,8 @@ if [[ "$STAGE" == all || "$STAGE" == setup ]]; then
   (cd "$H" && npx tsx lib/sandbox.ts "$RUN" "$RPC" "$RPC")
 
   log "install + byte-verify candidate programs"
-  (cd "$H" && npx tsx lib/install-programs.ts "$RPC" "$(solana-keygen pubkey "$RUN/authority.json")" "$RUN/programs.json")
+  # upgrade authority = the sandbox admin (live: FbTbDeGW is both; P1 tag 93 is upgrade-authority-gated)
+  (cd "$H" && npx tsx lib/install-programs.ts "$RPC" "$(solana-keygen pubkey "$RUN/home/.config/solana/percolator-v17-devnet.json")" "$RUN/programs.json")
 
   log "mainnet DEX pool snapshot → local validator (price source for seed + keeper)"
   (cd "$H" && npx tsx lib/mainnet-snapshot.ts "$RPC" "$RUN/cache/mainnet-dex.json")
@@ -75,7 +81,7 @@ if [[ "$STAGE" == all || "$STAGE" == setup ]]; then
 
   log "P0a seed (copy of $SEED_KIT, sha recorded) under the sandbox HOME"
   mkdir -p "$RUN/seed-kit/lib"
-  cp "$SEED_KIT/newmarkets-v18.3.ts" "$RUN/seed-kit/"; cp "$SEED_KIT/lib/common.ts" "$RUN/seed-kit/lib/"
+  cp "$SEED_KIT"/*.ts "$RUN/seed-kit/"; cp "$SEED_KIT"/lib/*.ts "$RUN/seed-kit/lib/"   # whole kit (seed + drills)
   shasum -a 256 "$RUN/seed-kit/newmarkets-v18.3.ts" | tee "$RUN/seed-kit.sha256"
   (cd "$RUN/seed-kit" && HOME="$RUN/home" SEED_TARGET=fork SEED_RPC_URL="$RPC" SEED_WS_URL="ws://127.0.0.1:$((RPC_PORT+1))" \
      SEED_STATE="$RUN/seed-state.json" TSX_DISABLE_CACHE=1 "$H/node_modules/.bin/tsx" newmarkets-v18.3.ts ${SEED_ONLY:+--only=$SEED_ONLY} > "$RUN/seed.log" 2>&1) \

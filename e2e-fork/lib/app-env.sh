@@ -18,4 +18,5 @@ NEXT_PUBLIC_API_URL=http://localhost:3299
 DEVNET_MINT_AUTHORITY_KEYPAIR=$(cat "$RUN/home/.config/solana/percolator-devnet-mint-authority.json")
 PLAYGROUND_KEEPER_KEYPAIR=$(cat "$RUN/home/.config/solana/percolator-v17-devnet.json")
 ENV
+for kv in ${APP_EXTRA_ENV:-}; do echo "$kv" >> "$APP/.env.local"; done
 echo "app env → $APP/.env.local"

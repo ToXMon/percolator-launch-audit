@@ -10,6 +10,6 @@ if [[ -f "$RUN/pids/app" ]]; then p=$(cat "$RUN/pids/app"); kill_tree "$p"; for 
 bash "$H/lib/app-env.sh" "$APP_DIR/app" "$RUN" "$RPC_PORT"
 for kv in "$@"; do echo "$kv" >> "$APP_DIR/app/.env.local"; done
 (cd "$H" && npx tsx lib/app-overlay.ts "$RUN/seed-state.json" "$APP_DIR/app")
-( cd "$APP_DIR/app" && nohup node_modules/.bin/next dev -p "$APP_PORT" > "$RUN/app.log" 2>&1 & echo $! > "$RUN/pids/app" )
+( cd "$APP_DIR/app" && nohup node_modules/.bin/next dev -p "$APP_PORT" > "$RUN/app.log" 2>&1 < /dev/null & echo $! > "$RUN/pids/app" ) > /dev/null 2>&1
 for _ in $(seq 1 150); do [[ "$(curl -s -m 5 -o /dev/null -w '%{http_code}' "http://localhost:$APP_PORT/api/health")" != 000 ]] && break; sleep 2; done
 curl -s -m 300 "http://localhost:$APP_PORT/api/markets" -o /dev/null -w "app $(git -C "$APP_DIR" rev-parse --short HEAD) markets %{http_code} %header{x-percolator-data-source}\n"

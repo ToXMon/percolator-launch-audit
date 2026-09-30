@@ -34,7 +34,7 @@ async function abandonedTrader(m: P.SeedMarket, leaveOpen: boolean) {
   return { owner: kp.publicKey, port };
 }
 
-export async function b12(m: P.SeedMarket, label = "B12MKT") {
+export async function b12(m: P.SeedMarket, label = process.env.B12_LABEL ?? "B12MKT") {
   const ab = [await abandonedTrader(m, true), await abandonedTrader(m, false), await abandonedTrader(m, false)];
   const s = await P.newWallet({ usdc: 2_000_000_000n });
   const { userLpAta, ixs } = P.stakeDepositIxs(s.publicKey, m, 1_000_000_000n);
@@ -65,18 +65,29 @@ export async function b12(m: P.SeedMarket, label = "B12MKT") {
   const L1 = log().slice(mark);
   const alert = L1.split("\n").find((l) => l.includes("[ALERT]") && l.includes(m.slab) && /portfolio/i.test(l)) ?? L1.split("\n").find((l) => l.includes("[ALERT]") && l.includes(label) && /portfolio/i.test(l));
   check(J, label, "keeper ade1e51: critical B12 alert with the blocking portfolio count", !!alert, "ALERT … portfolio(s) …", alert?.slice(0, 300) ?? "none");
-  const cranks = L1.split("\n").filter((l) => l.includes(label) && /\[cranker\]|crank revert|crank-reverts|slot-lag/.test(l));
+  const cranks = L1.split("\n").filter((l) => l.includes(label) && /\[cranker\]|crank revert|crank-reverts|slot-lag/.test(l) && !/no longer cranked/.test(l));
   check(J, label, "keeper ade1e51 (B13): the resolved market is not cranked / no crank alerts", cranks.length === 0, "0 crank lines", `${cranks.length}: ${cranks.slice(0, 2).join(" | ").slice(0, 250)}`);
-  // stranger sweep
+  // stranger sweep — only after the owners' window: force_close_delay_slots after resolve
+  const fcd = (parseWrapperConfigV17(new Uint8Array((await P.conn.getAccountInfo(P.pk(m.slab)))!.data), V17_HEADER_LEN) as any).forceCloseDelaySlots as bigint;
+  const tRes = BigInt(await P.conn.getSlot("confirmed"));
+  record({ journey: J, market: label, step: "owners' window before a stranger may close (force_close_delay_slots)", ok: true, actual: `${fcd} slots (seed default 432,000 ≈ 2 days: stakers' tag-29 recovery cannot start earlier when owners are absent)` });
+  while (BigInt(await P.conn.getSlot("confirmed")) < tRes + fcd + 10n) await P.sleep(5000);
   const stranger = await P.newWallet({ sol: 2 });
   const accs = await P.conn.getProgramAccounts(P.WRAPPER, { filters: [{ dataSize: V17_PORTFOLIO_ACCOUNT_LEN }] });
   const ports = accs.map((a) => ({ pk: a.pubkey, p: parsePortfolioV17(new Uint8Array(a.account.data)) as any })).filter((x) => x.p.marketGroupId.equals(P.pk(m.slab)));
   const rent0 = await Promise.all(ab.map((a) => P.conn.getBalance(a.owner)));
   const notes: string[] = [];
-  for (const x of ports) {
+  // phase 1: CloseResolved rounds across ALL portfolios (payout order matters — B9: winners settle after the LP)
+  for (let round = 0; round < 4; round++) for (const x of ports) {
     const owner: PublicKey = x.p.owner; const dest = P.getAssociatedTokenAddressSync(P.USDC, owner, true, P.TOKEN_PROGRAM_ID);
     const cr = Buffer.alloc(17); cr[0] = 30;
-    for (let i = 0; i < 3; i++) await P.send([createAssociatedTokenAccountIdempotentInstruction(stranger.publicKey, dest, owner, P.USDC, P.TOKEN_PROGRAM_ID), buildIx({ programId: P.WRAPPER, keys: buildAccountMetas(ACCOUNTS_CLOSE_RESOLVED_UNSIGNED, { owner, market: P.pk(m.slab), portfolio: x.pk, destToken: dest, vaultToken: P.pk(m.vaultAta), vaultAuthority: P.pk(m.vaultAuth), tokenProgram: P.TOKEN_PROGRAM_ID, nftRegistry: deriveNftRegistry(P.WRAPPER, P.pk(m.slab))[0] } as any), data: cr })], [stranger]);
+    await P.send([createAssociatedTokenAccountIdempotentInstruction(stranger.publicKey, dest, owner, P.USDC, P.TOKEN_PROGRAM_ID), buildIx({ programId: P.WRAPPER, keys: buildAccountMetas(ACCOUNTS_CLOSE_RESOLVED_UNSIGNED, { owner, market: P.pk(m.slab), portfolio: x.pk, destToken: dest, vaultToken: P.pk(m.vaultAta), vaultAuthority: P.pk(m.vaultAuth), tokenProgram: P.TOKEN_PROGRAM_ID, nftRegistry: deriveNftRegistry(P.WRAPPER, P.pk(m.slab))[0] } as any), data: cr })], [stranger]);
+  }
+  const left = await Promise.all(ports.map(async (x) => { const p = await P.readPortfolio(x.pk); return `${x.pk.toBase58().slice(0, 6)}:cap=${p.capital},pnl=${p.pnl},legs=${p.legs.length}`; }));
+  record({ journey: J, market: label, step: "after 4 rounds of stranger CloseResolved (all portfolios)", ok: true, actual: left.join(" ") });
+  // phase 2: tag 8 with [3] = owner
+  for (const x of ports) {
+    const owner: PublicKey = x.p.owner;
     const p = await P.readPortfolio(x.pk);
     const b = Buffer.alloc(25); b[0] = 8; b.writeBigUInt64LE(p.portfolioId, 1); b.writeBigUInt64LE(p.matcherSequence, 9); b.writeBigUInt64LE(p.positionEpoch, 17);
     const r8 = await P.send([new TransactionInstruction({ programId: P.WRAPPER, data: b, keys: [{ pubkey: stranger.publicKey, isSigner: true, isWritable: true }, { pubkey: P.pk(m.slab), isSigner: false, isWritable: true }, { pubkey: x.pk, isSigner: false, isWritable: true }, { pubkey: owner, isSigner: false, isWritable: true }] })], [stranger]);

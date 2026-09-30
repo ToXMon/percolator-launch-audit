@@ -53,7 +53,10 @@ export interface SeedMarket {
 }
 export function markets(): Record<string, SeedMarket> {
   const s = JSON.parse(fs.readFileSync(path.join(RUN, "seed-state.json"), "utf8"));
-  return Object.fromEntries(Object.entries(s.markets as Record<string, SeedMarket & { allGreen: boolean }>).filter(([, m]) => m.allGreen));
+  const all = Object.fromEntries(Object.entries(s.markets as Record<string, SeedMarket & { allGreen: boolean }>).filter(([, m]) => m.allGreen));
+  // E2E_REMAP="BURNIE=TRUMP,Percolator=TRUMP": keep journeys off markets reserved by a concurrent drill
+  for (const pair of (process.env.E2E_REMAP ?? "").split(",").filter(Boolean)) { const [from, to] = pair.split("="); if (all[to]) all[from] = all[to]; }
+  return all;
 }
 export const pk = (s: string) => new PublicKey(s);
 
@@ -236,6 +239,16 @@ export async function qForUsd(m: SeedMarket, usd: number): Promise<bigint> {
 }
 
 // ── Earn (LP vault) ───────────────────────────────────────────────────────────
+/** P3: when the LP-vault registry is bound to a vault-owned LP, tags 75/77/78 need the bound-vault tail. */
+export async function withP3TailIfBound(ix: TransactionInstruction, m: SeedMarket): Promise<TransactionInstruction> {
+  const sdk = await import("@percolatorct/sdk") as any;
+  if (!sdk.isLpVaultRegistryBoundP3) return ix;
+  const reg = await conn.getAccountInfo(pk(m.lpVaultRegistry));
+  if (!reg || !sdk.isLpVaultRegistryBoundP3(new Uint8Array(reg.data))) return ix;
+  const av = sdk.decodeAssetVaultLpP3(new Uint8Array((await conn.getAccountInfo(pk(m.slab)))!.data), 0);
+  const [vls] = sdk.deriveVaultLpStateP3(WRAPPER, pk(m.slab));
+  return sdk.withBoundVaultLpTailP3(ix, vls, av.vaultLpPortfolio);
+}
 export async function lpVaultDepositIxs(owner: PublicKey, m: SeedMarket, amount: bigint, domain = 0) {
   const lpMint = pk(m.lpVaultMint);
   const lpAta = getAssociatedTokenAddressSync(lpMint, owner, false, TOKEN_PROGRAM_ID);
@@ -245,7 +258,7 @@ export async function lpVaultDepositIxs(owner: PublicKey, m: SeedMarket, amount:
     lpAta,
     ixs: [
       createAssociatedTokenAccountIdempotentInstruction(owner, lpAta, owner, lpMint, TOKEN_PROGRAM_ID),
-      buildIx({
+      await withP3TailIfBound(buildIx({
         programId: WRAPPER,
         keys: buildAccountMetas(ACCOUNTS_LP_VAULT_DEPOSIT, {
           depositor: owner, market: pk(m.slab), registry: pk(m.lpVaultRegistry), lpMint, depositorLpAta: lpAta,
@@ -253,7 +266,7 @@ export async function lpVaultDepositIxs(owner: PublicKey, m: SeedMarket, amount:
           tokenProgram: TOKEN_PROGRAM_ID, systemProgram: SystemProgram.programId, siblingLedger: ledger1,
         }),
         data: encodeDepositToLpVault({ amount, domain }),
-      }),
+      }), m),
     ],
   };
 }

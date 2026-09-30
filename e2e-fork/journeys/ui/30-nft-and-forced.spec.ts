@@ -9,7 +9,7 @@
  * UF4 out-of-band price (band message): P1 wrapper only — recorded N/A on v18.3 bytes.
  */
 import { test, type Page, type Browser } from "@playwright/test";
-import { Keypair, PublicKey } from "@solana/web3.js";
+import { Keypair, PublicKey, TransactionInstruction } from "@solana/web3.js";
 import { TOKEN_2022_PROGRAM_ID } from "@solana/spl-token";
 import { deriveNftPda } from "@percolatorct/sdk";
 import { installTestWallet, type SignLogEntry } from "../../wallet/inject.ts";
@@ -138,6 +138,8 @@ test("UF2 reset-pending side (UI): short open self-heals in ONE signature", asyn
 
 test("UF3 LP depleted (UI): badge + mapped message, no raw error", async ({ page }) => {
   const J = "UF3-ui-lp-depleted"; const sym = "BURNIE"; const m = P.markets()[sym];
+  const kp = await P.newWallet({ usdc: 2_000_000_000n });
+  const hp = await openVia(kp, sym, 50); // position held BEFORE the LP hits its floor (close-while-halted check)
   const lp = P.pk(m.lpPortfolio);
   const ai = (await P.conn.getAccountInfo(lp))!;
   const orig = Buffer.from(ai.data);
@@ -154,14 +156,12 @@ test("UF3 LP depleted (UI): badge + mapped message, no raw error", async ({ page
   await rpc(P.RPC, "surfnet_setAccount", [lp.toBase58(), { data: d.toString("hex"), owner: ai.owner.toBase58(), lamports: ai.lamports }]);
   try {
     check(J, sym, "surgery: matcher-LP capital 0", (await P.readPortfolio(lp)).capital === 0n, "0", `${(await P.readPortfolio(lp)).capital} @off ${offs[0]}`);
-    const kp = await P.newWallet({ usdc: 2_000_000_000n });
-    await openVia(kp, sym, 0);
-    await installTestWallet(page, kp);
+    const log = await installTestWallet(page, kp);
     await page.goto("/markets");
-    const badge = page.locator(`[data-testid="market-row"][data-market="${m.slab}"] [data-testid="market-health-badge"][data-badge="lp-depleted"], [data-testid="market-card"][data-market="${m.slab}"] [data-testid="market-health-badge"][data-badge="lp-depleted"]`).first();
+    const badge = page.locator(`[data-market="${m.slab}"] [data-testid="market-health-badge"][data-badge="lp-depleted"], [data-market="${m.slab}"] [data-testid="market-health-badge"][data-badge="lp-halted"]`).first();
     const badgeOk = await badge.waitFor({ state: "attached", timeout: 60_000 }).then(() => true).catch(() => false);
     await shot(page, "UF3-markets-badge");
-    check(J, sym, "/markets shows the lp-depleted health badge", badgeOk, 'market-health-badge[data-badge="lp-depleted"]', badgeOk ? "present" : "absent");
+    check(J, sym, "/markets shows the LP health badge (P0: lp-depleted, P1: lp-halted)", badgeOk, 'market-health-badge[data-badge="lp-depleted"|"lp-halted"]', badgeOk ? "present" : "absent");
     await page.goto(`/trade/${m.slab}`);
     await page.getByTestId("trade-side-long").click({ timeout: 60_000 });
     await page.getByTestId("trade-size-input").fill("50");
@@ -171,16 +171,83 @@ test("UF3 LP depleted (UI): badge + mapped message, no raw error", async ({ page
     await P.sleep(6000);
     await shot(page, "UF3-trade-lp-depleted");
     const body = await page.locator("body").innerText();
-    const mapped = /LP (is )?depleted|LP Has No Capital|no (LP )?liquidity|out of capital/i.test(body);
+    const mapped = /LP (is )?depleted|LP Has No Capital|no (LP )?liquidity|out of capital|LP HALTED|capital floor|OPENING PAUSED/i.test(body);
     const raw = /custom program error|Custom\(\d+\)|0x[0-9a-f]{2,}/i.test(body);
-    check(J, sym, "open on a depleted LP: mapped message, no raw program error", mapped && !raw, "LP-depleted copy, no raw error", `mapped=${mapped} raw=${raw} submitDisabled=${disabled}`);
+    check(J, sym, "open on a depleted/halted LP: mapped message, no raw program error", mapped && !raw, "LP-depleted/halted copy, no raw error", `mapped=${mapped} raw=${raw} submitDisabled=${disabled}`);
+    // closes must still work while the LP is halted/depleted (they REDUCE the LP's exposure)
+    const before = (await P.readPortfolio(hp)).legs.length;
+    await page.getByTestId("position-close").first().click({ timeout: 30_000 }).catch(() => undefined);
+    await page.locator('[data-testid="close-percent-chip"][data-percent="100"]').first().click().catch(() => undefined);
+    await page.getByTestId("close-confirm").click().catch(() => undefined);
+    let after = before; for (let i = 0; i < 20 && after; i++) { await P.sleep(3000); after = (await P.readPortfolio(hp)).legs.length; }
+    await shot(page, "UF3-close-while-halted");
+    check(J, sym, "close still works while the LP is halted/depleted (UI)", before === 1 && after === 0, "1 → 0 legs", `${before} → ${after}`, txSigs(log).slice(-1));
   } finally {
     await rpc(P.RPC, "surfnet_setAccount", [lp.toBase58(), { data: orig.toString("hex"), owner: ai.owner.toBase58(), lamports: ai.lamports }]);
   }
 });
 
-test("UF4 out-of-band price → band message (P1 only)", async () => {
+test("UF4 out-of-band price → band message (P1 only)", async ({ page }) => {
+  const J = "UF4-ui-band";
   const wrapperSha = JSON.parse((await import("node:fs")).readFileSync(`${P.RUN}/programs.json`, "utf8")).wrapper.soSha256 as string;
-  const isP0 = wrapperSha.startsWith("4472b383");
-  record({ journey: "UF4-ui-band", market: "-", step: "oracle band on exec_price", ok: true, actual: isP0 ? "N/A on v18.3 (no band in P0 bytes; P1 item 1). Re-run with WRAPPER_SO=<P1 build>." : "P1 build: TODO wire band trigger" });
+  if (wrapperSha.startsWith("4472b383")) { record({ journey: J, market: "-", step: "oracle band on exec_price", ok: true, actual: "N/A on v18.3 (no band in P0 bytes)" }); return; }
+  const sym = "PENGU"; const m = P.markets()[sym];
+  const { deriveProgramDataAddressP3 } = await import("@percolatorct/sdk");
+  const [programData] = deriveProgramDataAddressP3(P.WRAPPER);
+  const t93 = (bandBps: number) => { const d = Buffer.alloc(44); let o = 0; d[o++] = 93; d.writeUInt16LE(0, o); o += 2; d.writeUInt16LE(bandBps, o); o += 2; d.writeUInt32LE(0, o); o += 4;
+    const w = (v: bigint) => { d.writeBigUInt64LE(v & 0xffffffffffffffffn, o); d.writeBigUInt64LE(v >> 64n, o + 8); o += 16; }; w(1_000_000_000n); w(100_000_000_000_000n); d[o++] = 0; d.writeUInt16LE(0, o);
+    return new TransactionInstruction({ programId: P.WRAPPER, data: d, keys: [{ pubkey: P.admin.publicKey, isSigner: true, isWritable: false }, { pubkey: programData, isSigner: false, isWritable: false }, { pubkey: P.pk(m.slab), isSigner: false, isWritable: true }] }); };
+  const n = await P.send([t93(1)], [P.admin]);
+  check(J, sym, "tag 93: narrow the exec band to 1 bps (upgrade authority)", n.ok, "ok", n.ok ? "ok" : `${n.err}`, n.sig ? [n.sig] : []);
+  try {
+    const kp = await P.newWallet({ usdc: 3_000_000_000n });
+    const port = await openVia(kp, sym, 0);
+    await installTestWallet(page, kp);
+    await page.goto(`/trade/${m.slab}`);
+    await page.getByTestId("trade-side-long").click({ timeout: 60_000 });
+    await page.getByTestId("trade-size-input").fill("2000");
+    const submit = page.getByTestId("trade-submit");
+    const disabled = await submit.isDisabled().catch(() => false);
+    if (!disabled) { await submit.click(); if (await page.getByTestId("trade-confirm").isVisible({ timeout: 4000 }).catch(() => false)) await page.getByTestId("trade-confirm").click(); }
+    await P.sleep(8000);
+    await shot(page, "UF4-band");
+    const body = await page.locator("body").innerText();
+    const legs = (await P.readPortfolio(port)).legs.length;
+    const mapped = /band|outside the (allowed )?price|price moved/i.test(body);
+    const raw = /custom program error|Custom\(\d+\)/i.test(body);
+    check(J, sym, "out-of-band fill (impact > 1 bps band): refused, band message shown, no raw error, no position", legs === 0 && mapped && !raw, "0 legs, band copy, no raw error", `legs=${legs} mapped=${mapped} raw=${raw} submitDisabled=${disabled} band-el=${await page.locator('[data-testid="limits-band"]').first().getAttribute("data-band-bps").catch(() => null)}`);
+  } finally { await P.send([t93(0)], [P.admin]); }
+});
+
+test("UF5 P1 max-size clamp (side OI cap via tag 93) → clamp notice, fill ≤ cap", async ({ page }) => {
+  const J = "UF5-ui-max-size-clamp";
+  const wrapperSha = JSON.parse((await import("node:fs")).readFileSync(`${P.RUN}/programs.json`, "utf8")).wrapper.soSha256 as string;
+  if (wrapperSha.startsWith("4472b383")) { record({ journey: J, market: "-", step: "P1 clamp", ok: true, actual: "N/A on v18.3" }); return; }
+  const sym = "JUP"; const m = P.markets()[sym];
+  const { deriveProgramDataAddressP3 } = await import("@percolatorct/sdk");
+  const [programData] = deriveProgramDataAddressP3(P.WRAPPER);
+  const t93 = (sideCapQ: bigint) => { const d = Buffer.alloc(44); let o = 0; d[o++] = 93; d.writeUInt16LE(0, o); o += 2; d.writeUInt16LE(0, o); o += 2; d.writeUInt32LE(0, o); o += 4;
+    const w = (v: bigint) => { d.writeBigUInt64LE(v & 0xffffffffffffffffn, o); d.writeBigUInt64LE(v >> 64n, o + 8); o += 16; }; w(1_000_000_000n); w(sideCapQ); d[o++] = 0; d.writeUInt16LE(0, o);
+    return new TransactionInstruction({ programId: P.WRAPPER, data: d, keys: [{ pubkey: P.admin.publicKey, isSigner: true, isWritable: false }, { pubkey: programData, isSigner: false, isWritable: false }, { pubkey: P.pk(m.slab), isSigner: false, isWritable: true }] }); };
+  const capQ = await P.qForUsd(m, 100);
+  const n = await P.send([t93(capQ)], [P.admin]);
+  check(J, sym, "tag 93: side OI cap ≈ $100", n.ok, "ok", n.ok ? `capQ=${capQ}` : `${n.err}`);
+  try {
+    const kp = await P.newWallet({ usdc: 3_000_000_000n });
+    const port = await openVia(kp, sym, 0);
+    await installTestWallet(page, kp);
+    await page.goto(`/trade/${m.slab}`);
+    await page.getByTestId("trade-side-long").click({ timeout: 60_000 });
+    const maxQ = await page.locator('[data-testid="limits-max-size"][data-side="long"]').first().getAttribute("data-max-q", { timeout: 30_000 }).catch(() => null);
+    await page.getByTestId("trade-size-input").fill("500");
+    await P.sleep(1500);
+    const clamp = await page.locator('[data-testid="limits-clamp-notice"]').first().isVisible().catch(() => false);
+    await page.getByTestId("trade-submit").click().catch(() => undefined);
+    if (await page.getByTestId("trade-confirm").isVisible({ timeout: 4000 }).catch(() => false)) await page.getByTestId("trade-confirm").click();
+    let leg: bigint = 0n; for (let i = 0; i < 20 && !leg; i++) { await P.sleep(3000); leg = (await P.readPortfolio(port)).legs[0]?.basisPosQ ?? 0n; }
+    await shot(page, "UF5-clamp");
+    check(J, sym, "UI shows limits-max-size ≈ cap and the clamp notice for a $500 order", clamp && !!maxQ && BigInt(maxQ) <= capQ, `clamp visible, max-q ≤ ${capQ}`, `clamp=${clamp} max-q=${maxQ}`);
+    check(J, sym, "the order is clamped: filled size ≤ side cap (on-chain)", leg > 0n && leg <= capQ, `0 < leg ≤ ${capQ}`, `leg=${leg}`);
+    if (leg) await P.send([await P.tradeIx(kp.publicKey, m, port, -leg)], [kp]);
+  } finally { await P.send([t93(100_000_000_000_000n)], [P.admin]); }
 });

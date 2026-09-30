@@ -101,9 +101,10 @@ export async function earnJourney(sym: string) {
     { pubkey: P.TOKEN_PROGRAM_ID, isSigner: false, isWritable: false }, { pubkey: sib, isSigner: false, isWritable: true },
     { pubkey: d.publicKey, isSigner: false, isWritable: true },
   ], data: encodeExecuteRedemption({ domain: reg2.domain }) });
+  const exIxT = await P.withP3TailIfBound(exIx, m);
   const w0 = await P.usdcBalance(d.publicKey);
-  let ex = await P.send([P.crankIx(d.publicKey, m), exIx], [d]);
-  for (let i = 0; !ex.ok && i < 20 && /Custom":(36|3)\b/.test(ex.err ?? ""); i++) { await P.sleep(3000); ex = await P.send([P.crankIx(d.publicKey, m), exIx], [d]); }
+  let ex = await P.send([P.crankIx(d.publicKey, m), exIxT], [d]);
+  for (let i = 0; !ex.ok && i < 20 && /Custom":(36|3)\b/.test(ex.err ?? ""); i++) { await P.sleep(3000); ex = await P.send([P.crankIx(d.publicKey, m), exIxT], [d]); }
   const got = (await P.usdcBalance(d.publicKey)) - w0;
   if (!ex.ok) record({ journey: J, market: sym, step: "execute redemption (claim)", ok: false, err: `${ex.err} ${ex.logs.slice(-6).join(" | ")}` });
   else check(J, sym, "execute redemption: paid principal + fee share", got > amt, `> ${amt} (deposit + share of cranked fees)`, `${got} (Δ ${got - amt})`, [ex.sig!]);

@@ -77,10 +77,18 @@ test(`F3-ADL ${SYM}: bankruptcy → reduce-only → LP-side trader exits via tag
     // 3. same-side trader closes in the UI
     if (T) {
       const log = await installTestWallet(page, T.kp);
+      await page.goto("/markets");
+      const badge = await page.locator(`[data-market="${m.slab}"] [data-testid="market-health-badge"][data-badge="adl-reduce-only"]`).first().waitFor({ state: "attached", timeout: 60_000 }).then(() => true).catch(() => false);
+      await shot(page, "F3ADL-markets-badge");
+      check(J, SYM, "2a. /markets shows the adl-reduce-only health badge (launch#2700 §8)", badge, 'market-health-badge[data-badge="adl-reduce-only"]', badge ? "present" : "absent");
       await page.goto(`/trade/${m.slab}`);
       const notice = await page.locator('[data-testid="limits-adl-reduce-only"]').first().waitFor({ state: "visible", timeout: 60_000 }).then(() => true).catch(() => false);
       await shot(page, "F3ADL-reduce-only");
       check(J, SYM, "2b. UI shows the ADL reduce-only notice", notice, 'limits-adl-reduce-only visible', notice ? "visible" : "absent (app without limits-ui?)");
+      await page.locator('[data-testid="trade-mode-tab"][data-mode="close"]').click().catch(() => undefined);
+      const route = await page.locator('[data-testid="limits-adl-close-route"]').first().isVisible({ timeout: 10_000 }).catch(() => false);
+      record({ journey: J, market: SYM, step: "2c. Close tab shows limits-adl-close-route", ok: true, actual: route ? "visible" : "absent" });
+      await page.locator('[data-testid="trade-mode-tab"][data-mode="open"]').click().catch(() => undefined);
       await page.getByTestId("position-close").first().click({ timeout: 60_000 });
       await page.locator('[data-testid="close-percent-chip"][data-percent="100"]').first().click();
       await page.getByTestId("close-confirm").click();

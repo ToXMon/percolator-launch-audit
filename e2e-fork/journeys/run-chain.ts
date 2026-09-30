@@ -4,7 +4,7 @@
  */
 import { traderJourney } from "./chain/trader.ts";
 import { earnJourney, stakeJourney, creatorFeeJourney, nftJourney } from "./chain/products.ts";
-import { lapsedBucket, resetPendingSide, keeperOutage, bankruptLiquidation, freezeAndPermissionlessResolve, freezeThenOwnerExits, unsignedLpCloseUnblocksWinner, deadOracleResolve } from "./chain/forced.ts";
+import { lapsedBucket, resetPendingSide, keeperOutage, bankruptLiquidation, freezeAndPermissionlessResolve, freezeThenOwnerExits, unsignedLpCloseUnblocksWinner, deadOracleResolve, stakeTerminalRecovery } from "./chain/forced.ts";
 import { journey } from "../lib/results.ts";
 
 const ONLY = new Set((process.env.ONLY ?? "").split(",").filter(Boolean));
@@ -30,7 +30,8 @@ const plan: [string, string, () => Promise<unknown>][] = [
   ["F3", "TRUMP", () => freezeAndPermissionlessResolve("TRUMP")],
   ["F3r2", "SOL", () => freezeAndPermissionlessResolve("SOL")],
   ["F3c", "TRUMP", () => unsignedLpCloseUnblocksWinner("TRUMP")],
-  ["F7", "JUP", () => deadOracleResolve("JUP")], // LAST: resolves the market
+  ["F7", "JUP", () => deadOracleResolve("JUP")],
+  ["F8", "PENGU", () => stakeTerminalRecovery("PENGU")], // LAST: resolves the market
 ];
 let failed = 0;
 for (const [id, label, fn] of plan) {

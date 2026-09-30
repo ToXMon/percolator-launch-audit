@@ -507,3 +507,92 @@ export async function deadOracleResolve(sym = "JUP", stale = 9_000n) {
     record({ journey: J, market: sym, step: "vault after all closes", ok: true, actual: `${(await P.readMarket(m)).vaultTokens}` });
   } finally { keeper("start"); }
 }
+
+/**
+ * F8 stake#301 (f9b9190) terminal insurance recovery + CloseSlab proxy, on a stake-bound market:
+ * the f9 stake .so is installed IN PLACE over v18.3 stake (existing pools kept — what a deploy does),
+ * a staker deposits, fees accrue, the market is resolved (tag 39; stale window by RECORDED surgery —
+ * the real-slot path is F7), every trader CloseResolves, then:
+ *   negative control: stake tag 30 AdminCloseSlab BEFORE recovery → refused;
+ *   anyone: stake tag 29 RecoverTerminalInsurance(amount) → pool.vault grows by amount, market_resolved set;
+ *   the staker withdraws principal + recovered budget/fees;
+ *   pool admin: tag 30 AdminCloseSlab → the wrapper slab is closed (tombstone / account gone).
+ */
+export async function stakeTerminalRecovery(sym = "PENGU", stakeSo = process.env.STAKE_F9_SO ?? `${process.env.HOME}/wt/e2e-stake-f9/target/deploy/percolator_stake.so`) {
+  const J = "F8-stake-terminal-insurance-recovery";
+  const m = P.markets()[sym];
+  const fs = await import("node:fs");
+  const { putProgram } = await import("../../lib/offline-programs.ts");
+  const { sha256, readProgramBytes } = await import("../../lib/chain.ts");
+  const bytes = fs.readFileSync(stakeSo);
+  const auth = (await readProgramBytes(P.conn, P.STAKE)).authority!;
+  await putProgram(P.RPC, P.STAKE, bytes, new PublicKey(auth), bytes.length + 16_384);
+  const onchain = (await readProgramBytes(P.conn, P.STAKE)).data.subarray(0, bytes.length);
+  check(J, sym, "install stake f9b9190 in place (existing pools kept)", sha256(onchain) === sha256(bytes), sha256(bytes).slice(0, 16), sha256(onchain).slice(0, 16));
+  const pool0 = await P.readStakePool(m).catch((e) => { record({ journey: J, market: sym, step: "existing pool decodes under f9", ok: false, err: String(e) }); return null; });
+  if (!pool0) return;
+  // staker + fees
+  const s = await P.newWallet({ usdc: 2_000_000_000n });
+  const { userLpAta, ixs } = P.stakeDepositIxs(s.publicKey, m, 1_000_000_000n);
+  await P.mustSend("stake deposit", ixs, [s]);
+  const { churn } = await import("../chain/products.ts");
+  await churn(sym, 3000, 2);
+  const trader = await P.newWallet({ usdc: 600_000_000n }); const tp = await P.createPortfolio(trader, m);
+  await P.mustSend("trader deposit", [await P.depositIx(trader.publicKey, m, tp, 500_000_000n)], [trader]);
+  // resolve (recorded surgery for the stale window)
+  keeper("stop");
+  try {
+    const raw = Buffer.from((await P.conn.getAccountInfo(P.pk(m.slab)))!.data);
+    while (BigInt(await P.conn.getSlot("confirmed")) < 9_100n) await P.sleep(5000);
+    const slot = BigInt(await P.conn.getSlot("confirmed"));
+    await patchSlab(P.pk(m.slab), [[cfgFieldOffset(raw, "permissionlessResolveStaleSlots"), u64(9_000n)], [cfgFieldOffset(raw, "lastGoodOracleSlot"), u64(slot - 9_001n)]]);
+    const rd = Buffer.alloc(9); rd[0] = 39; rd.writeBigUInt64LE(BigInt(await P.conn.getSlot("confirmed")), 1);
+    const res = await P.send([new TransactionInstruction({ programId: P.WRAPPER, keys: [{ pubkey: P.pk(m.slab), isSigner: false, isWritable: true }], data: rd })], [s]);
+    check(J, sym, "market resolved (tag 39; stale window via RECORDED surgery)", res.ok, "ok", res.ok ? "ok" : `${res.err}`, res.sig ? [res.sig] : []);
+    if (!res.ok) return;
+    // traders + LP close
+    for (const [kp, port] of [[trader, tp], [P.admin, P.pk(m.lpPortfolio)]] as const) for (let i = 0; i < 3; i++) await P.send([closeResolvedIx(kp.publicKey, m, port)], [kp]);
+    // accounts
+    const pool = P.pk(m.stakePool), vault = P.pk(m.stakeVault), vauth = P.pk(m.stakeVaultAuth), slab = P.pk(m.slab);
+    const closeSlabIx = (admin: PublicKey) => {
+      const poolAta = P.getAssociatedTokenAddressSync(P.USDC, pool, true, P.TOKEN_PROGRAM_ID);
+      return { poolAta, ix: new TransactionInstruction({ programId: P.STAKE, data: Buffer.from([30]), keys: [
+        { pubkey: admin, isSigner: true, isWritable: true }, { pubkey: pool, isSigner: false, isWritable: true }, { pubkey: slab, isSigner: false, isWritable: true },
+        { pubkey: P.pk(m.vaultAta), isSigner: false, isWritable: true }, { pubkey: P.pk(m.vaultAuth), isSigner: false, isWritable: false },
+        { pubkey: poolAta, isSigner: false, isWritable: true }, { pubkey: P.TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+        { pubkey: P.USDC, isSigner: false, isWritable: true }, { pubkey: vault, isSigner: false, isWritable: true }, { pubkey: P.WRAPPER, isSigner: false, isWritable: false } ] }) };
+    };
+    const { createAssociatedTokenAccountIdempotentInstruction } = await import("@solana/spl-token");
+    const cs = closeSlabIx(P.admin.publicKey);
+    const pre = await P.send([createAssociatedTokenAccountIdempotentInstruction(P.admin.publicKey, cs.poolAta, pool, P.USDC, P.TOKEN_PROGRAM_ID), cs.ix], [P.admin], { simulateOnly: true });
+    check(J, sym, "negative control: AdminCloseSlab (stake tag 30) refused while the insurance budget is outstanding", !pre.ok, "refused (21)", `${pre.err}`);
+    const recIx = (amount: bigint) => { const d = Buffer.alloc(9); d[0] = 29; d.writeBigUInt64LE(amount, 1);
+      return new TransactionInstruction({ programId: P.STAKE, data: d, keys: [
+        { pubkey: s.publicKey, isSigner: false, isWritable: false }, { pubkey: pool, isSigner: false, isWritable: true }, { pubkey: vault, isSigner: false, isWritable: true },
+        { pubkey: vauth, isSigner: false, isWritable: false }, { pubkey: slab, isSigner: false, isWritable: true }, { pubkey: P.pk(m.vaultAta), isSigner: false, isWritable: true },
+        { pubkey: P.pk(m.vaultAuth), isSigner: false, isWritable: false }, { pubkey: P.TOKEN_PROGRAM_ID, isSigner: false, isWritable: false }, { pubkey: P.WRAPPER, isSigner: false, isWritable: false } ] }); };
+    // largest recoverable amount (simulate, descending)
+    const wv = (await P.readMarket(m)).vaultTokens;
+    let amount = 0n;
+    for (let a = wv; a > 0n; a = a / 2n) { const r = await P.send([recIx(a)], [s], { simulateOnly: true }); if (r.ok) { amount = a; break; } }
+    if (amount > 0n) { let hi = amount * 2n; let lo = amount; while (hi - lo > 1n) { const mid = (lo + hi) / 2n; if ((await P.send([recIx(mid)], [s], { simulateOnly: true })).ok) lo = mid; else hi = mid; } amount = lo; }
+    const v0 = await P.tokenBalance(vault);
+    const r29 = await P.send([recIx(amount)], [s]);
+    const v1 = await P.tokenBalance(vault);
+    const pool1 = await P.readStakePool(m);
+    check(J, sym, "anyone: RecoverTerminalInsurance (stake tag 29) moves the budget into pool.vault + sets market_resolved", r29.ok && v1 - v0 >= amount && pool1.marketResolved,
+      `vault +${amount}, marketResolved`, `${r29.ok ? "ok" : r29.err} vault +${v1 - v0} marketResolved=${pool1.marketResolved}`, r29.sig ? [r29.sig] : []);
+    // staker withdraws
+    await P.sleep(3000);
+    const lp = await P.tokenBalance(userLpAta);
+    const w0 = await P.usdcBalance(s.publicKey);
+    const wd = await P.send([P.stakeWithdrawIx(s.publicKey, m, lp)], [s]);
+    const got = (await P.usdcBalance(s.publicKey)) - w0;
+    check(J, sym, "staker withdraws principal + recovered budget/fees after resolve", wd.ok && got > 1_000_000_000n, "> 1000 USDC", `${wd.ok ? "ok" : wd.err} +${got}`, wd.sig ? [wd.sig] : []);
+    // close slab via proxy
+    const cs2 = closeSlabIx(P.admin.publicKey);
+    const rc = await P.send([createAssociatedTokenAccountIdempotentInstruction(P.admin.publicKey, cs2.poolAta, pool, P.USDC, P.TOKEN_PROGRAM_ID), cs2.ix], [P.admin]);
+    const slabAfter = await P.conn.getAccountInfo(slab);
+    check(J, sym, "pool admin: AdminCloseSlab (stake tag 30) closes the wrapper market", rc.ok, "ok (slab closed/tombstoned)", `${rc.ok ? "ok" : `${rc.err} ${rc.logs.slice(-3).join(" | ")}`} slab lamports=${slabAfter?.lamports ?? 0} len=${slabAfter?.data.length ?? 0}`, rc.sig ? [rc.sig] : []);
+  } finally { keeper("start"); }
+}

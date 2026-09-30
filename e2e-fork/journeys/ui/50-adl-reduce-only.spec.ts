@@ -47,8 +47,11 @@ test(`F3-ADL ${SYM}: bankruptcy → reduce-only → LP-side trader exits via tag
   await P.mustSend("A 9x long", [await P.tradeIx(A.kp.publicKey, m, A.port, await P.qForUsd(m, 1800))], [A.kp]);
   const st0 = await P.readMarket(m);
   const [ib, ic] = [await P.readPortfolio(B.port), await P.readPortfolio(C.port)];
-  await P.mustSend("B/C NoCpi", [buildIx({ programId: P.WRAPPER, keys: buildAccountMetas(ACCOUNTS_TRADE_NOCPI, { signerA: B.kp.publicKey, signerB: C.kp.publicKey, market: P.pk(m.slab), accountA: B.port, accountB: C.port }),
-    data: encodeTradeNoCpi({ accountAPortfolioId: ib.portfolioId, accountAPositionEpoch: ib.positionEpoch, accountBPortfolioId: ic.portfolioId, accountBPositionEpoch: ic.positionEpoch, assetIndex: 0, marketId: st0.marketId, sizeQ: await P.qForUsd(m, 500), execPrice: st0.markE6, feeBps: 30n, backingFeeCapBps: 0 }) })], [B.kp, C.kp]);
+  // P3 wrappers refuse TradeNoCpi (Custom 77: every fill goes through the vault LP), so B and C each trade the LP;
+  // net LP exposure from B+C is zero, as with the old B<->C NoCpi pair.
+  void ib; void ic; void buildIx; void buildAccountMetas; void ACCOUNTS_TRADE_NOCPI; void encodeTradeNoCpi;
+  await P.mustSend("B long vs LP", [await P.tradeIx(B.kp.publicKey, m, B.port, await P.qForUsd(m, 500))], [B.kp]);
+  await P.mustSend("C short vs LP", [await P.tradeIx(C.kp.publicKey, m, C.port, -(await P.qForUsd(m, 500)))], [C.kp]);
   // price move on the DEX the keeper reads
   const pool = P.pk(m.pool); const ai = (await P.conn.getAccountInfo(pool))!; const orig = Buffer.from(ai.data.subarray(253, 269));
   const d = Buffer.from(ai.data); const sqrt = d.readBigUInt64LE(253) | (d.readBigUInt64LE(261) << 64n);

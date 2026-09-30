@@ -90,6 +90,8 @@ export async function mustSend(label: string, ixs: TransactionInstruction[], sig
 /** Throwaway wallet: local SOL via surfnet_setAccount, Sim-USDC minted by the sandbox mint authority. */
 export async function newWallet(opts: { sol?: number; usdc?: bigint } = {}): Promise<Keypair> {
   const kp = Keypair.generate();
+  // fork-only throwaway: persisted so wind-down journeys can owner-sign every portfolio close
+  fs.appendFileSync(path.join(RUN, "wallets.jsonl"), JSON.stringify({ pk: kp.publicKey.toBase58(), sk: Array.from(kp.secretKey) }) + "\n");
   await rpc(RPC, "surfnet_setAccount", [kp.publicKey.toBase58(), { lamports: Math.round((opts.sol ?? 5) * LAMPORTS_PER_SOL) }]);
   if ((opts.usdc ?? 0n) > 0n) await mintUsdc(kp.publicKey, opts.usdc!);
   return kp;

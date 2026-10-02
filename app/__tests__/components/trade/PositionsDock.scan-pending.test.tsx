@@ -1,7 +1,5 @@
 /**
- * PositionsDock row: shows the CURRENT effective leverage
- * (notional / (capital + pnl)) with the cross-margin tooltip — and "—" when
- * equity <= 0 or the mark is unknown.
+ * GH#2707: the dock must not assert "no account" while the portfolio scan is in flight.
  */
 import "@testing-library/jest-dom";
 import { render, screen } from "@testing-library/react";
@@ -10,6 +8,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const h = vi.hoisted(() => ({
   account: null as unknown,
+  pending: false,
   priceE6: 100_000_000n as bigint | null,
 }));
 
@@ -24,7 +23,7 @@ const acct = (over: Record<string, unknown>) => ({
   },
 });
 
-vi.mock("@/hooks/useUserAccount", () => ({ useUserAccount: () => h.account, useUserAccountScanPending: () => false }));
+vi.mock("@/hooks/useUserAccount", () => ({ useUserAccount: () => h.account, useUserAccountScanPending: () => h.pending }));
 vi.mock("@/hooks/useNftWrappedPosition", () => ({ useNftWrappedPosition: () => null }));
 vi.mock("@/hooks/useClosePosition", () => ({
   useClosePosition: () => ({ closePosition: vi.fn(), loading: false, error: null, prewarmClose: vi.fn() }),
@@ -60,47 +59,31 @@ import { PositionsDock } from "@/components/trade/PositionsDock";
 beforeEach(() => {
   localStorage.clear();
   h.priceE6 = 100_000_000n;
-  h.account = acct({});
+  h.account = null;
+  h.pending = false;
 });
 
-const lev = () => screen.getByTestId("position-leverage");
-
-describe("PositionsDock leverage column", () => {
-  it("renders the column with the cross-margin tooltip", () => {
+describe("PositionsDock while the portfolio scan is pending (GH#2707)", () => {
+  it("shows loading, not the no-account empty state, while the scan has not answered", () => {
+    h.pending = true;
     render(<PositionsDock slabAddress="s" />);
-    expect(screen.getByText("Lev")).toBeInTheDocument();
-    expect(lev().textContent).toBe("4×"); // 40 x $100 = $4000 on $1000
-    expect(lev().getAttribute("title")).toMatch(/cross/i);
-    expect(lev().getAttribute("title")).toMatch(/not the leverage you opened at/i);
+    expect(screen.getByText("Loading positions…")).toBeInTheDocument();
+    expect(screen.queryByText(/Connect your wallet and deposit collateral/)).toBeNull();
+    expect(screen.queryByText("No open positions")).toBeNull();
   });
 
-  it("uses equity (capital + pnl)", () => {
-    h.account = acct({ pnl: -500_000_000n });
+  it("CONTROL: once the scan answers 'no account', the no-account empty state renders as before", () => {
+    h.pending = false;
     render(<PositionsDock slabAddress="s" />);
-    expect(lev().textContent).toBe("8×");
+    expect(screen.getByText("No open positions")).toBeInTheDocument();
+    expect(screen.getByText(/Connect your wallet and deposit collateral/)).toBeInTheDocument();
   });
 
-  it("follows the mark price", () => {
-    h.priceE6 = 50_000_000n;
+  it("a known position renders normally even if the pending flag were still set", () => {
+    h.pending = true;
+    h.account = acct({});
     render(<PositionsDock slabAddress="s" />);
-    expect(lev().textContent).toBe("2×");
-  });
-
-  it("shows a dash when equity <= 0", () => {
-    h.account = acct({ pnl: -1_000_000_000n });
-    render(<PositionsDock slabAddress="s" />);
-    expect(lev().textContent).toBe("—");
-    expect(lev().getAttribute("title")).toMatch(/zero or negative/i);
+    expect(screen.getByTestId("position-leverage").textContent).toBe("4×");
+    expect(screen.queryByText("Loading positions…")).toBeNull();
   });
 });
-
-/** UX WP-9 AC6 (audit §3.13): the NFT actions sit in the position row's "⋯" menu. */
-describe("PositionsDock: NFT actions in the row", () => {
-  it("the position row carries the NFT menu next to Close", () => {
-    render(<PositionsDock slabAddress="s" />);
-    const row = screen.getByTestId("position-row");
-    expect(row.querySelector('[data-testid="nft-menu-marker"]')).not.toBeNull();
-    expect(row.querySelector('[data-testid="position-close"]')).not.toBeNull();
-  });
-});
-

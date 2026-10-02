@@ -9,7 +9,7 @@ import { getConfig } from "@/lib/config";
 import { usePreferredWallet, resolveActiveWallet } from "@/hooks/usePreferredWallet";
 import { buildSolflareBrowseUrl } from "@/lib/solflare";
 import { usePrivyLogin } from "@/hooks/usePrivySafe";
-import { useWalletNeedsReconnect } from "@/hooks/useWalletNeedsReconnect";
+import { isReconnectFallbackEligible, useWalletNeedsReconnect } from "@/hooks/useWalletNeedsReconnect";
 
 /**
  * Privy-backed connect button. Split into its own module (loaded via
@@ -44,6 +44,7 @@ export const ConnectButtonPrivyInner: FC = () => {
     authenticated,
     walletsReady: walletsReady === true,
     hasActiveWallet: !!activeWallet,
+    fallbackEligible: isReconnectFallbackEligible(user?.linkedAccounts),
   });
 
   const { login } = useLogin({

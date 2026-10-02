@@ -32,6 +32,36 @@ export interface WalletSessionSignals {
   walletsReady: boolean;
   /** Whether `resolveActiveWallet()` found a wallet that can actually sign. */
   hasActiveWallet: boolean;
+  /**
+   * Whether the RECONNECT_FALLBACK_MS path may fire: the session has an external Solana wallet
+   * linked and no embedded Privy one (see `isReconnectFallbackEligible`). Defaults to false so a
+   * caller that does not know can never trigger the slow path.
+   */
+  fallbackEligible?: boolean;
+}
+
+interface LinkedAccountLike {
+  type: string;
+  chainType?: string;
+  walletClientType?: string;
+}
+
+/**
+ * The slow RECONNECT_FALLBACK_MS path asks the user to re-prompt an EXTERNAL wallet, so it is only
+ * correct for a session that has one linked and no embedded Privy Solana wallet. Email / embedded
+ * sessions (including a fresh AutoSignIn whose embedded wallet is still being created) have no
+ * extension to reconnect: `connectWallet()` would open the wrong flow, and a lagging `wallets`
+ * array must not be called stale.
+ */
+export function isReconnectFallbackEligible(
+  linkedAccounts: ReadonlyArray<LinkedAccountLike> | null | undefined,
+): boolean {
+  const solana = (linkedAccounts ?? []).filter(
+    (a) => a.type === "wallet" && a.chainType === "solana",
+  );
+  const hasEmbedded = solana.some((a) => a.walletClientType === "privy");
+  const hasExternal = solana.some((a) => a.walletClientType !== "privy");
+  return hasExternal && !hasEmbedded;
 }
 
 /**
@@ -56,8 +86,14 @@ export function useWalletNeedsReconnect(
 ): boolean {
   // Authenticated, but nothing can sign. `walletsReady` only decides how long to wait before
   // calling it stale (it keeps a normal load from flashing); it can no longer block it for good.
-  const unusable = signals.privyReady && signals.authenticated && !signals.hasActiveWallet;
-  const waitMs = isStaleWalletSession(signals) ? graceMs : fallbackMs;
+  const strictStale = isStaleWalletSession(signals);
+  const unusable =
+    strictStale ||
+    (signals.privyReady &&
+      signals.authenticated &&
+      !signals.hasActiveWallet &&
+      signals.fallbackEligible === true);
+  const waitMs = strictStale ? graceMs : fallbackMs;
   const [confirmed, setConfirmed] = useState(false);
 
   useEffect(() => {

@@ -1,5 +1,7 @@
 # Percolator Launch
 
+> **[Security audit evidence](https://github.com/ToXMon/percolator-launch-audit/blob/playground/docs/security-audit/README.md)**
+
 **Pump.fun for Perps** — Launch perpetual futures markets for any Solana token in one click.
 
 Built on [Percolator](https://github.com/aeyakovenko/percolator) by Anatoly Yakovenko. Permissionless, coin-margined, fully on-chain.

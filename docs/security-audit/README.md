@@ -12,24 +12,24 @@ All three reproduced findings were demonstrated on public devnet with transactio
 
 ## Reading order
 
-1. **Decision-makers:** read [`report.md`](report.md), then [`audit-report.pdf`](audit-report.pdf) for the complete audit.
-2. **Evidence reviewers:** read [`poc/report.md`](poc/report.md), the [triage source](triage/triage-findings.json), and [`oracle-confirmation/report.md`](oracle-confirmation/report.md).
-3. **Reproducers:** read [`poc/README.md`](poc/README.md), then run the scripts with your own funded devnet keypair.
-4. **Forensic review:** inspect the [transcripts](evidence/session-transcript.txt), [public transcript](evidence/public-session-transcript.txt), lossless [cast files](evidence/session-recording.cast), and [recordings](evidence/session-recording.mp4), [GIF fallback](evidence/session-recording.gif).
+1. **Decision-makers:** read [`report.md`](https://github.com/ToXMon/percolator-launch-audit/blob/playground/docs/security-audit/report.md), then [`audit-report.pdf`](https://github.com/ToXMon/percolator-launch-audit/raw/playground/docs/security-audit/audit-report.pdf) for the complete audit.
+2. **Evidence reviewers:** read [`poc/report.md`](https://github.com/ToXMon/percolator-launch-audit/blob/playground/docs/security-audit/poc/report.md), the [triage source](https://github.com/ToXMon/percolator-launch-audit/blob/playground/docs/security-audit/triage/triage-findings.json), and [`oracle-confirmation/report.md`](https://github.com/ToXMon/percolator-launch-audit/blob/playground/docs/security-audit/oracle-confirmation/report.md).
+3. **Reproducers:** read [`poc/README.md`](https://github.com/ToXMon/percolator-launch-audit/blob/playground/docs/security-audit/poc/README.md), then run the scripts with your own funded devnet keypair.
+4. **Forensic review:** inspect the [transcripts](https://github.com/ToXMon/percolator-launch-audit/blob/playground/docs/security-audit/evidence/session-transcript.txt), [public transcript](https://github.com/ToXMon/percolator-launch-audit/blob/playground/docs/security-audit/evidence/public-session-transcript.txt), lossless [cast files](https://github.com/ToXMon/percolator-launch-audit/blob/playground/docs/security-audit/evidence/session-recording.cast), and [recordings](https://github.com/ToXMon/percolator-launch-audit/raw/playground/docs/security-audit/evidence/session-recording.mp4), [GIF fallback](https://github.com/ToXMon/percolator-launch-audit/raw/playground/docs/security-audit/evidence/session-recording.gif).
 
 ## Contents
 
 | Path | Purpose | Audience |
 |---|---|---|
-| [`report.md`](report.md) | Authored audit and all 10 current findings | Team and security reviewers |
-| [`audit-report.pdf`](audit-report.pdf) | Rendered 18-page report | Sharing and archival |
-| [`triage/`](triage/) | Evidence-of-record triage report and JSON findings ledger | Auditors and maintainers |
-| [`oracle-confirmation/report.md`](oracle-confirmation/report.md) | On-chain oracle-authority confirmation and known-variant context | Program and oracle reviewers |
-| [`poc/`](poc/) | Reproduction report and scripts for the three reproduced findings | Engineers reproducing results |
-| [`evidence/`](evidence/) | Public-devnet and local-validator transcripts, recordings, and cast sources | Evidence reviewers |
+| [`report.md`](https://github.com/ToXMon/percolator-launch-audit/blob/playground/docs/security-audit/report.md) | Authored audit and all 10 current findings | Team and security reviewers |
+| [`audit-report.pdf`](https://github.com/ToXMon/percolator-launch-audit/raw/playground/docs/security-audit/audit-report.pdf) | Rendered 18-page report | Sharing and archival |
+| [`triage/`](https://github.com/ToXMon/percolator-launch-audit/tree/playground/docs/security-audit/triage) | Evidence-of-record triage report and JSON findings ledger | Auditors and maintainers |
+| [`oracle-confirmation/report.md`](https://github.com/ToXMon/percolator-launch-audit/blob/playground/docs/security-audit/oracle-confirmation/report.md) | On-chain oracle-authority confirmation and known-variant context | Program and oracle reviewers |
+| [`poc/`](https://github.com/ToXMon/percolator-launch-audit/tree/playground/docs/security-audit/poc) | Reproduction report and scripts for the three reproduced findings | Engineers reproducing results |
+| [`evidence/`](https://github.com/ToXMon/percolator-launch-audit/tree/playground/docs/security-audit/evidence) | Public-devnet and local-validator transcripts, recordings, and cast sources | Evidence reviewers |
 
 ## Reproduction and safety
 
-A reader needs their own funded devnet keypair and local checkout to re-run the PoC scripts. Provide key material through environment variables as described in [`poc/README.md`](poc/README.md). **No key material is included in this repository.** The scripts are capped proof runs; do not point them at production or shared deployments.
+A reader needs their own funded devnet keypair and local checkout to re-run the PoC scripts. Provide key material through environment variables as described in [`poc/README.md`](https://github.com/ToXMon/percolator-launch-audit/blob/playground/docs/security-audit/poc/README.md). **No key material is included in this repository.** The scripts are capped proof runs; do not point them at production or shared deployments.
 
 Remediation is deliberately out of scope for this evidence-only submission.

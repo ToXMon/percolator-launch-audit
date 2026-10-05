@@ -1,0 +1,58 @@
+Script started on 2026-10-05 16:48:14+00:00 [COMMAND="/home/user/repro-venv/bin/asciinema rec --overwrite --command "bash -lc 'set -x; /root/percolator/node_modules/.bin/tsx /home/user/repro/proof.mjs'" /home/user/repro/session.cast" <not executed on terminal>]
+[0;32masciinema: recording asciicast to /home/user/repro/session.cast[0m
+
+[0;32masciinema: exit opened program when you're done[0m
+
++ /root/percolator/node_modules/.bin/tsx /home/user/repro/proof.mjs
+bigint: Failed to load bindings, pure JS will be used (try npm run rebuild?)
+[2026-10-05T16:48:15.169Z] LOCAL SUPABASE MOCK listening on 127.0.0.1:54321 (no external DB)
+[2026-10-05T16:48:15.202Z] THROWAWAY authority=[REDACTED_DEVNET_PUBLIC_KEY]
+[2026-10-05T16:48:15.203Z] THROWAWAY creator=91EdMxdQrcEfHyGU3BTka2dBdk116hT6Jzog9uPczRvi
+[2026-10-05T16:48:15.203Z] LOCAL validator airdrop request: 100 SOL to throwaway authority
+[2026-10-05T16:48:15.396Z] LOCAL validator faucet response: signature=4TkXvqYVk2ZxYuGPtuFJheAxBR9YgCGYbhPPfC9Hg1GXXiiBUB89693VYUS3MefqYK168dJTnY5WiTgikVpxoW7T
+[2026-10-05T16:48:15.400Z] authority balance before=100 SOL
+[2026-10-05T16:48:15.402Z] LOCAL APP starting at http://127.0.0.1:3000 with devnet-only env and local mock DB
+[2026-10-05T16:48:17.037Z] LOCAL APP ready; all following HTTP requests target 127.0.0.1:3000
+
+REQUEST F-01 UNCAPPED DEVNET AIRDROP (single request)
+POST /api/devnet-mint-token
+Headers: {}
+Body: {"mainnetCA":"DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263","marketAddress":"91EdMxdQrcEfHyGU3BTka2dBdk116hT6Jzog9uPczRvi","creatorWallet":"91EdMxdQrcEfHyGU3BTka2dBdk116hT6Jzog9uPczRvi"}
+RESPONSE status=200
+Response headers: {"connection":"keep-alive","content-security-policy":"default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline' https://cdn.vercel-insights.com https://challenges.cloudflare.com https://www.googletagmanager.com https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https: blob:; connect-src 'self' https://privy.percolator.trade wss://privy.percolator.trade ws://localhost:* http://localhost:* https://*.solana.com wss://*.solana.com https://*.supabase.co wss://*.supabase.co https://*.vercel-insights.com https://api.coingecko.com https://api.geckoterminal.com https://*.helius-rpc.com wss://*.helius-rpc.com https://api.dexscreener.com https://*.up.railway.app wss://*.up.railway.app https://lite.jup.ag https://token.jup.ag https://tokens.jup.ag https://auth.privy.io https://embedded-wallets.privy.io https://*.privy.systems https://*.rpc.privy.systems https://explorer-api.walletconnect.com wss://relay.walletconnect.com wss://relay.walletconnect.org wss://www.walletlink.org https://challenges.cloudflare.com https://www.googletagmanager.com https://*.google-analytics.com https://*.analytics.google.com https://cloudflareinsights.com blob:; frame-src 'self' https://privy.percolator.trade https://auth.privy.io https://embedded-wallets.privy.io https://*.privy.systems https://phantom.app https://solflare.com https://verify.walletconnect.com https://verify.walletconnect.org https://challenges.cloudflare.com; frame-ancestors 'self' https://percolatorlaunch.com https://*.percolatorlaunch.com https://percolator-launch.vercel.app; object-src 'none'; base-uri 'self'","content-type":"application/json","date":"Mon, 05 Oct 2026 16:48:17 GMT","keep-alive":"timeout=5","permissions-policy":"camera=(), microphone=(), geolocation=()","referrer-policy":"strict-origin-when-cross-origin","strict-transport-security":"max-age=63072000; includeSubDomains; preload","transfer-encoding":"chunked","vary":"rsc, next-router-state-tree, next-router-prefetch, next-router-segment-prefetch","x-content-type-options":"nosniff","x-frame-options":"SAMEORIGIN","x-ratelimit-limit":"120","x-ratelimit-remaining":"118","x-ratelimit-reset":"60","x-xss-protection":"0"}
+Response body: {"status":"created","devnetMint":"4Ypf46d4E4winSyr4rvmfbzoTtL9LUXprAqFS4GTVxMQ","symbol":"Bonk","name":"Bonk","decimals":6,"priceUsd":0.000003833,"airdropTokens":130446125.75006521,"airdropUsd":500,"signature":"32SyXfMrtGLF8xhxAnPLSD5ZQvoTaS8MdHV4iHsuRcPFaYVSYfFXsLRu1zyVRm9ZfmhbgocdSnahWCxAVmZXbjJP"}
+[2026-10-05T16:48:17.781Z] F-01 chain evidence: devnetMint=4Ypf46d4E4winSyr4rvmfbzoTtL9LUXprAqFS4GTVxMQ creatorATA=FpYakYgNMXRabcga3Qyecnikby6KL2FgtJeLUcv9jkzr rawAmount=130446125750065 uiAmount=130446125.750065
+[2026-10-05T16:48:17.783Z] authority balance after F-01=99.99648912 SOL
+
+REQUEST F-02 unauthenticated mirror mint call 1/2
+POST /api/devnet-mirror-mint
+Headers: {}
+Body: {"mainnetCA":"So11111111111111111111111111111111111111112","walletAddress":"91EdMxdQrcEfHyGU3BTka2dBdk116hT6Jzog9uPczRvi"}
+RESPONSE status=200
+Response headers: {"connection":"keep-alive","content-security-policy":"default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline' https://cdn.vercel-insights.com https://challenges.cloudflare.com https://www.googletagmanager.com https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https: blob:; connect-src 'self' https://privy.percolator.trade wss://privy.percolator.trade ws://localhost:* http://localhost:* https://*.solana.com wss://*.solana.com https://*.supabase.co wss://*.supabase.co https://*.vercel-insights.com https://api.coingecko.com https://api.geckoterminal.com https://*.helius-rpc.com wss://*.helius-rpc.com https://api.dexscreener.com https://*.up.railway.app wss://*.up.railway.app https://lite.jup.ag https://token.jup.ag https://tokens.jup.ag https://auth.privy.io https://embedded-wallets.privy.io https://*.privy.systems https://*.rpc.privy.systems https://explorer-api.walletconnect.com wss://relay.walletconnect.com wss://relay.walletconnect.org wss://www.walletlink.org https://challenges.cloudflare.com https://www.googletagmanager.com https://*.google-analytics.com https://*.analytics.google.com https://cloudflareinsights.com blob:; frame-src 'self' https://privy.percolator.trade https://auth.privy.io https://embedded-wallets.privy.io https://*.privy.systems https://phantom.app https://solflare.com https://verify.walletconnect.com https://verify.walletconnect.org https://challenges.cloudflare.com; frame-ancestors 'self' https://percolatorlaunch.com https://*.percolatorlaunch.com https://percolator-launch.vercel.app; object-src 'none'; base-uri 'self'","content-type":"application/json","date":"Mon, 05 Oct 2026 16:48:18 GMT","keep-alive":"timeout=5","permissions-policy":"camera=(), microphone=(), geolocation=()","referrer-policy":"strict-origin-when-cross-origin","strict-transport-security":"max-age=63072000; includeSubDomains; preload","transfer-encoding":"chunked","vary":"rsc, next-router-state-tree, next-router-prefetch, next-router-segment-prefetch","x-content-type-options":"nosniff","x-frame-options":"SAMEORIGIN","x-ratelimit-limit":"120","x-ratelimit-remaining":"117","x-ratelimit-reset":"59","x-xss-protection":"0"}
+Response body: {"status":"created","devnetMint":"FpZ3m2ySUDcFH5dyMYrkrqEr7eTKtq2wyNRPXWQ4wAek","name":"Wrapped SOL","symbol":"SOL","decimals":6,"logoUrl":"https://cdn.dexscreener.com/cms/images/fcfb87378d3198fe753ca08ba51a5552a84f34cf48cd09d83971aa195bdf00d2?width=800&height=800&quality=95&format=auto","signature":"3XTBpoKekaV1GgMWptF1JnpvGpTWN5EGeW7uXNEcAn3YTttKWA4qdx3fSZbo4zAgA9bBktPDb7Mxqwb2CHZbasd9"}
+
+REQUEST F-02 unauthenticated mirror mint call 2/2
+POST /api/devnet-mirror-mint
+Headers: {}
+Body: {"mainnetCA":"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v","walletAddress":"91EdMxdQrcEfHyGU3BTka2dBdk116hT6Jzog9uPczRvi"}
+RESPONSE status=200
+Response headers: {"connection":"keep-alive","content-security-policy":"default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline' https://cdn.vercel-insights.com https://challenges.cloudflare.com https://www.googletagmanager.com https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https: blob:; connect-src 'self' https://privy.percolator.trade wss://privy.percolator.trade ws://localhost:* http://localhost:* https://*.solana.com wss://*.solana.com https://*.supabase.co wss://*.supabase.co https://*.vercel-insights.com https://api.coingecko.com https://api.geckoterminal.com https://*.helius-rpc.com wss://*.helius-rpc.com https://api.dexscreener.com https://*.up.railway.app wss://*.up.railway.app https://lite.jup.ag https://token.jup.ag https://tokens.jup.ag https://auth.privy.io https://embedded-wallets.privy.io https://*.privy.systems https://*.rpc.privy.systems https://explorer-api.walletconnect.com wss://relay.walletconnect.com wss://relay.walletconnect.org wss://www.walletlink.org https://challenges.cloudflare.com https://www.googletagmanager.com https://*.google-analytics.com https://*.analytics.google.com https://cloudflareinsights.com blob:; frame-src 'self' https://privy.percolator.trade https://auth.privy.io https://embedded-wallets.privy.io https://*.privy.systems https://phantom.app https://solflare.com https://verify.walletconnect.com https://verify.walletconnect.org https://challenges.cloudflare.com; frame-ancestors 'self' https://percolatorlaunch.com https://*.percolatorlaunch.com https://percolator-launch.vercel.app; object-src 'none'; base-uri 'self'","content-type":"application/json","date":"Mon, 05 Oct 2026 16:48:18 GMT","keep-alive":"timeout=5","permissions-policy":"camera=(), microphone=(), geolocation=()","referrer-policy":"strict-origin-when-cross-origin","strict-transport-security":"max-age=63072000; includeSubDomains; preload","transfer-encoding":"chunked","vary":"rsc, next-router-state-tree, next-router-prefetch, next-router-segment-prefetch","x-content-type-options":"nosniff","x-frame-options":"SAMEORIGIN","x-ratelimit-limit":"120","x-ratelimit-remaining":"116","x-ratelimit-reset":"59","x-xss-protection":"0"}
+Response body: {"status":"created","devnetMint":"8GitjsqiagLBJyfpNZ3pmGL9MtniGDesexG7EjyhkjY9","name":"Pump","symbol":"PUMP","decimals":6,"logoUrl":"https://cdn.dexscreener.com/cms/images/a0d07b12d0c34be414b8ac98a827ff862cfd684554c8da4c63fa647eef0af501?width=800&height=800&quality=95&format=auto","signature":"3PXsyUFBGYGYmMKPT6eWAr1oTVLTKkXVczsd6EowfGksqt5tsprTkdEVkomkyMRVAEG7bo2XMx8iRnenzVJpsH4x"}
+[2026-10-05T16:48:18.684Z] F-02 accepted statuses=200,200; no auth header was sent
+[2026-10-05T16:48:18.687Z] authority balance after F-02=99.99354592 SOL
+
+REQUEST F-03 KEEPER HMAC (captured request replayed verbatim)
+POST /api/oracle-keeper/register
+Headers: {"x-keeper-timestamp":"1791218898687","x-keeper-signature":"624cf8c230e4b74548c05559cd32ff56e95561fa16ddb537125f07fe0a151eba"}
+Body: {"slabAddress":"91EdMxdQrcEfHyGU3BTka2dBdk116hT6Jzog9uPczRvi","mainnetCA":"DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263"}
+RESPONSE verifier-pass-1: {"accepted":true}
+RESPONSE verifier-pass-2 (same timestamp/signature/body): {"accepted":true}
+[2026-10-05T16:48:18.689Z] F-03 replay result accepted_twice=true; nonce_present=false; validity_window_ms=300000
+[2026-10-05T16:48:18.689Z] DONE: capped proof run; no loops and no production/shared deployment targeted
+[0;32masciinema: recording finished[0m
+
+[0;32masciinema: asciicast saved to /home/user/repro/session.cast[0m
+
+
+Script done on 2026-10-05 16:48:18+00:00 [COMMAND_EXIT_CODE="0"]
